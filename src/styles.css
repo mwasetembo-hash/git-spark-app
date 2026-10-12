@@ -142,3 +142,42 @@
     color: var(--color-foreground);
   }
 }
+
+/* Trading terminal theme (dark, always on) */
+:root {
+  --background: oklch(0.16 0.02 250);
+  --foreground: oklch(0.95 0.01 250);
+  --card: oklch(0.2 0.025 250);
+  --card-foreground: oklch(0.95 0.01 250);
+  --popover: oklch(0.2 0.025 250);
+  --popover-foreground: oklch(0.95 0.01 250);
+  --primary: oklch(0.78 0.16 75);
+  --primary-foreground: oklch(0.18 0.02 250);
+  --secondary: oklch(0.26 0.03 250);
+  --secondary-foreground: oklch(0.95 0.01 250);
+  --muted: oklch(0.25 0.025 250);
+  --muted-foreground: oklch(0.8 0.03 250);
+  --accent: oklch(0.28 0.03 250);
+  --accent-foreground: oklch(0.95 0.01 250);
+  --destructive: oklch(0.62 0.22 25);
+  --border: oklch(0.4 0.04 250);
+  --input: oklch(0.3 0.03 250);
+  --ring: oklch(0.78 0.16 75);
+  --up: oklch(0.8 0.22 150);
+  --down: oklch(0.7 0.24 25);
+}
+@theme inline {
+  --color-up: var(--up);
+  --color-down: var(--down);
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+html, body { background: #02030d; }
+@utility glass {
+  background: color-mix(in oklch, var(--card) 38%, transparent);
+  backdrop-filter: blur(6px) saturate(130%);
+  border: 1px solid color-mix(in oklch, var(--primary) 22%, transparent);
+  box-shadow: 0 10px 40px -10px oklch(0.5 0.2 260 / 0.45), inset 0 1px 0 oklch(1 0 0 / 0.06);
+}
+@utility text-glow { text-shadow: 0 0 18px color-mix(in oklch, var(--primary) 70%, transparent); }
