@@ -6,13 +6,16 @@ import { DiagnosePanel } from "@/components/DiagnosePanel";
 import { BrainPanel } from "@/components/BrainPanel";
 import { CosmicBackground } from "@/components/CosmicBackground";
 import type { BrainVerdict } from "@/lib/brain-providers";
+import { runsSignal } from "@/lib/runs";
+import { Journal } from "@/components/Journal";
+import { Profiles } from "@/components/Profiles";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Mwase Deriv Bot — Multi-Contract Trading Terminal" },
-      { name: "description", content: "Trade Rise/Fall, Digits, Touch and range contracts on every Deriv instrument with a live market scanner and loss limits." },
-      { property: "og:title", content: "Mwase Deriv Bot — Multi-Contract Trading Terminal" },
+      { title: "Mwase Deriv Hybrid — Only Ups/Downs Trading Terminal" },
+      { name: "description", content: "Demo-first Deriv terminal with an Only Ups / Only Downs engine, every contract type, AI analysis, saved profiles and strict loss limits." },
+      { property: "og:title", content: "Mwase Deriv Hybrid — Only Ups/Downs Trading Terminal" },
       { property: "og:description", content: "Every Deriv market, contract-specific signals, a ranking scanner and autopilot with risk limits." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -40,9 +43,9 @@ function Dashboard() {
   const [accountId, setAccountId] = useState("");
   const [balance, setBalance] = useState<number | null>(null);
   const [instruments, setInstruments] = useState<(Inst & { open?: boolean; pip?: number | undefined })[]>(CATALOG);
-  const [symbol, setSymbol] = useState("R_75");
+  const [symbol, setSymbol] = useState("R_50");
   const [prices, setPrices] = useState<number[]>([]);
-  const [kind, setKind] = useState<Kind>("RISE_FALL");
+  const [kind, setKind] = useState<Kind>("RUNS");
   const [mode, setMode] = useState<Mode>("SIGNAL");
   const [stake, setStake] = useState(1);
   const [duration, setDuration] = useState(5);
@@ -52,7 +55,15 @@ function Dashboard() {
   const [hi, setHi] = useState(0.5);
   const [lo, setLo] = useState(-0.5);
   const [minConf, setMinConf] = useState(75);
-  const [martingale, setMartingale] = useState(1);
+  const [sensitivity, setSensitivity] = useState(3);
+  const [cooldown, setCooldown] = useState(8);
+  const [selectedTick, setSelectedTick] = useState(3);
+  const [multiplier, setMultiplier] = useState(100);
+  const [growthRate, setGrowthRate] = useState(0.01);
+  const [tpAmt, setTpAmt] = useState(1);
+  const [slAmt, setSlAmt] = useState(1);
+  const [available, setAvailable] = useState<Set<string> | null>(null);
+  const lastSettle = useRef(0);
   const [maxLoss, setMaxLoss] = useState(20);
   const [takeProfit, setTakeProfit] = useState(10);
   const [maxTrades, setMaxTrades] = useState(50);
@@ -85,13 +96,25 @@ function Dashboard() {
   }, []);
 
   // Digit contracts need ticks
-  useEffect(() => { if (def.digits) { setUnit("t"); setDuration((d) => Math.min(10, Math.max(1, d))); } }, [kind]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (def.digits) { setUnit("t"); setDuration((d) => Math.min(10, Math.max(1, d))); }
+    if (def.ticks) { setUnit("t"); setDuration((d) => Math.min(def.ticks![1], Math.max(def.ticks![0], d))); }
+    if (def.single) setMode("SIGNAL");
+  }, [kind]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const settings = { symbol, kind, mode, stake, duration, unit, digit, offset, hi, lo, minConf, maxLoss, takeProfit, maxTrades, lossStreakStop, sensitivity, cooldown, selectedTick, multiplier, growthRate, tpAmt, slAmt, brainGate };
+  const applySettings = (c: Partial<typeof settings>) => {
+    const set: Record<string, (v: any) => void> = { symbol: setSymbol, kind: setKind, mode: setMode, stake: setStake, duration: setDuration, unit: setUnit, digit: setDigit, offset: setOffset, hi: setHi, lo: setLo, minConf: setMinConf, maxLoss: setMaxLoss, takeProfit: setTakeProfit, maxTrades: setMaxTrades, lossStreakStop: setLossStreakStop, sensitivity: setSensitivity, cooldown: setCooldown, selectedTick: setSelectedTick, multiplier: setMultiplier, growthRate: setGrowthRate, tpAmt: setTpAmt, slAmt: setSlAmt, brainGate: setBrainGate };
+    for (const [k, v] of Object.entries(c)) if (set[k] && v !== undefined) set[k]!(v);
+  };
 
   const net = trades.reduce((s, t) => s + (t.profit ?? 0), 0);
   const settled = trades.filter((t) => t.profit !== null);
   const wins = settled.filter((t) => (t.profit ?? 0) > 0).length;
   const ticksEq = unit === "t" ? duration : unit === "s" ? duration / 2 : duration * 30;
-  const sig = kindSignal(kind, prices, decimals, { digit, offset, hi, lo, ticks: ticksEq });
+  const sig = kindSignal(kind, prices, decimals, { digit, offset, hi, lo, ticks: ticksEq, sensitivity });
+  const runs = kind === "RUNS" ? runsSignal(prices, duration, sensitivity) : null;
+  const ctAvailable = (t: string) => !available || available.has(t);
   const base = computeSignal(prices);
   const stats = def.digits ? digitStats(prices, decimals) : null;
 
@@ -153,6 +176,11 @@ function Dashboard() {
         const r = await c.send({ ticks: symbol, subscribe: 1 });
         tickSub.current = r.subscription?.id ?? null;
       } catch (e: any) { addLog(`Ticks error on ${symbol}: ${e.message}`); }
+      try {
+        const cf = await c.send({ contracts_for: symbol });
+        const list = (cf.contracts_for?.available ?? []) as any[];
+        setAvailable(list.length ? new Set(list.map((x) => String(x.contract_type))) : null);
+      } catch { setAvailable(null); }
     })();
   }, [symbol, status]);
 
@@ -180,10 +208,15 @@ function Dashboard() {
     if (!c || !account) return null;
     setBusy(true);
     const ct = def.types[side];
+    if (!ctAvailable(ct)) { addLog(`${ct} is not offered on ${symbol} — pick another market`); setBusy(false); return null; }
     const req: Record<string, unknown> = {
       proposal: 1, amount: Number(amount.toFixed(2)), basis: "stake", contract_type: ct,
-      currency: account.currency, duration, duration_unit: unit, underlying_symbol: symbol,
+      currency: account.currency, underlying_symbol: symbol,
     };
+    if (!def.open) { req["duration"] = duration; req["duration_unit"] = unit; }
+    if (def.extra === "selected_tick") req["selected_tick"] = selectedTick;
+    if (def.extra === "multiplier") { req["multiplier"] = multiplier; req["limit_order"] = { take_profit: tpAmt, stop_loss: slAmt }; }
+    if (def.extra === "growth_rate") { req["growth_rate"] = growthRate; req["limit_order"] = { take_profit: tpAmt }; }
     const sgn = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
     if (def.barrier === "digit") req["barrier"] = String(digit);
     if (def.barrier === "offset") req["barrier"] = sgn(offset);
@@ -207,17 +240,12 @@ function Dashboard() {
       const gap = Date.now() - (g.__lastOrderAt ?? 0);
       if (gap < 1200) await sleep(1200 - gap);
       g.__lastOrderAt = Date.now();
-      const { proposal: _p, ...params } = req;
-      const price = Number(amount.toFixed(2));
-      let b: any;
-      try {
-        // Direct buy with parameters skips the proposal call entirely
-        b = await withBackoff(() => c.send({ buy: 1, price, parameters: params }));
-      } catch (e: any) {
-        if (isRate(e)) throw e;
-        const p = await withBackoff(() => c.send(req));
-        b = await withBackoff(() => c.send({ buy: p.proposal.id, price }));
-      }
+      // Validate with a proposal first; only buy a quote Deriv actually returned.
+      const p = await withBackoff(() => c.send(req));
+      if (!p?.proposal?.id) throw new Error(`No valid quote for ${ct} on ${symbol}`);
+      const price = Number(p.proposal.ask_price ?? amount);
+      addLog(`Quote ${ct}: ask ${price} payout ${p.proposal.payout ?? "—"}`);
+      const b: any = await withBackoff(() => c.send({ buy: p.proposal.id, price }));
       const id = b.buy.contract_id as number;
       setTrades((t) => [{ id, label, stake: amount, profit: null, symbol, time: new Date().toLocaleTimeString() }, ...t]);
       addLog(`BUY ${label} ${amount.toFixed(2)} on ${symbol} #${id}`);
@@ -228,6 +256,7 @@ function Dashboard() {
         });
         c.send({ proposal_open_contract: 1, contract_id: id, subscribe: 1 }).catch(() => {});
       });
+      lastSettle.current = Date.now();
       setTrades((t) => t.map((x) => (x.id === id ? { ...x, profit: result } : x)));
       addLog(`${result > 0 ? "WIN" : "LOSS"} #${id}: ${result.toFixed(2)}`);
       return result;
@@ -236,7 +265,7 @@ function Dashboard() {
       setError(e.message);
       return null;
     } finally { setBusy(false); }
-  }, [account, duration, unit, symbol, def, digit, offset, hi, lo]);
+  }, [account, duration, unit, symbol, def, digit, offset, hi, lo, selectedTick, multiplier, growthRate, tpAmt, slAmt, available]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!auto || busy || status !== "on") return;
@@ -244,6 +273,8 @@ function Dashboard() {
     if (net >= takeProfit) { setAuto(false); addLog("Stopped: profit target reached"); return; }
     if (trades.length >= maxTrades) { setAuto(false); addLog("Stopped: max trades reached"); return; }
     if (streak.current >= lossStreakStop) { setAuto(false); addLog(`Stopped: ${streak.current} losses in a row`); return; }
+    if (!account?.isVirtual) { setAuto(false); addLog("Stopped: autopilot runs on DEMO accounts only"); return; }
+    if (Date.now() - lastSettle.current < cooldown * 1000) return;
     if (sig.side === null || sig.confidence < minConf) return;
     if (brainGate && (!brain || brain.side !== sig.side)) return;
     if (mode === "SIDE_A" && sig.side !== 0) return;
@@ -252,12 +283,12 @@ function Dashboard() {
     placeTrade(sig.side, amt).then((r) => {
       if (r == null) return;
       streak.current = r > 0 ? 0 : streak.current + 1;
-      curStake.current = r > 0 ? stake : Math.min(amt * Math.min(martingale, 2), maxStake);
+      curStake.current = Math.min(stake, maxStake); // fixed stake — no martingale
     });
   }, [auto, busy, prices.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startAuto = () => {
-    if (account && !account.isVirtual && !confirm("REAL MONEY account. Start autopilot with real funds?")) return;
+    if (!account?.isVirtual) { setError("Autopilot is locked to DEMO accounts. Switch to your demo (VRTC) account to run it."); return; }
     curStake.current = stake;
     streak.current = 0;
     setAuto(true);
@@ -281,7 +312,13 @@ function Dashboard() {
     <div className="relative isolate min-h-screen font-sans text-foreground">
       <CosmicBackground />
       <header className="glass sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-        <h1 className="text-glow text-xl font-bold tracking-tight">MWASE <span className="text-primary">DERIV BOT</span></h1>
+        <h1 className="text-glow text-xl font-bold tracking-tight">MWASE <span className="text-primary">DERIV HYBRID</span></h1>
+        <div className="hidden flex-1 justify-center gap-4 font-mono text-xs md:flex">
+          <span>EQUITY <b>{balance != null ? balance.toFixed(2) : "—"}</b></span>
+          <span>P/L <b className={net >= 0 ? "text-up" : "text-down"}>{net.toFixed(2)}</b></span>
+          <span>SIGNAL <b className={sig.side === 0 ? "text-up" : sig.side === 1 ? "text-down" : ""}>{sig.side === null ? "WAIT" : def.sides[sig.side]}</b></span>
+          <span className={`rounded px-2 ${account?.isVirtual ? "bg-up/20 text-up" : "bg-down/20 text-down"}`}>{account ? (account.isVirtual ? "DEMO-LOCK" : "REAL · AUTO LOCKED") : "OFFLINE"}</span>
+        </div>
         <div className="flex items-center gap-2 text-xs">
           <span className={`h-2.5 w-2.5 rounded-full ${status === "on" ? "bg-up" : status === "connecting" ? "bg-primary" : "bg-down"}`} />
           {status === "on" && account ? `${account.loginid} · ${account.isVirtual ? "DEMO" : "REAL"}` : status}
@@ -341,11 +378,24 @@ function Dashboard() {
               </select>
               <span className="ml-auto font-mono text-lg">{last?.toFixed(decimals) ?? "—"}</span>
             </div>
-            <svg viewBox="0 0 400 100" preserveAspectRatio="none" className="h-40 w-full">
+            <div className="chart-3d"><svg viewBox="0 0 400 100" preserveAspectRatio="none" className="h-48 w-full">
+              <defs><linearGradient id="fillg" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="var(--up)" stopOpacity="0.35" /><stop offset="100%" stopColor="var(--up)" stopOpacity="0" /></linearGradient></defs>
+              {pts && <polygon points={`0,100 ${pts} ${(view.length - 1) * 4},100`} fill="url(#fillg)" />}
               {def.barrier === "offset" && last != null && <line x1="0" x2="400" y1={100 - ((last + offset - min) / (max - min || 1)) * 100} y2={100 - ((last + offset - min) / (max - min || 1)) * 100} stroke="var(--primary)" strokeDasharray="4 3" strokeWidth="0.8" />}
               {def.barrier === "range" && last != null && [hi, lo].map((b) => { const y = 100 - ((last + b - min) / (max - min || 1)) * 100; return <line key={b} x1="0" x2="400" y1={y} y2={y} stroke="var(--primary)" strokeDasharray="4 3" strokeWidth="0.8" />; })}
               <polyline points={pts} fill="none" stroke="var(--up)" strokeWidth="1.5" />
-            </svg>
+            </svg></div>
+            {available && <p className="mt-1 text-xs text-muted-foreground">On this market: {def.types.filter((t, i) => !(def.single && i)).map((t) => <span key={t} className={ctAvailable(t) ? "text-up" : "text-down"}>{t} {ctAvailable(t) ? "✓" : "✗ not offered"} </span>)}</p>}
+            {runs && (
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {runs.parts.map((p) => (
+                  <div key={p.name} className="rounded-lg border border-border bg-background/30 p-2 text-xs">
+                    <div className="text-muted-foreground">{p.name}</div>
+                    <div className={`font-mono font-semibold ${p.bias === 0 ? "text-up" : p.bias === 1 ? "text-down" : ""}`}>{p.bias === 0 ? "▲ " : p.bias === 1 ? "▼ " : ""}{p.value}</div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {stats && (
               <div className="mt-2 grid grid-cols-10 gap-1 text-center font-mono text-xs">
@@ -380,7 +430,7 @@ function Dashboard() {
               </div>
               <div className="flex gap-2">
                 <button disabled={status !== "on" || busy} onClick={() => placeTrade(0, stake)} className="rounded-md bg-up px-5 py-3 font-bold text-primary-foreground disabled:opacity-40">{def.sides[0]}</button>
-                <button disabled={status !== "on" || busy} onClick={() => placeTrade(1, stake)} className="rounded-md bg-down px-5 py-3 font-bold text-primary-foreground disabled:opacity-40">{def.sides[1]}</button>
+                <button hidden={!!def.single} disabled={status !== "on" || busy} onClick={() => placeTrade(1, stake)} className="rounded-md bg-down px-5 py-3 font-bold text-primary-foreground disabled:opacity-40">{def.sides[1]}</button>
               </div>
             </div>
           </div>
@@ -389,27 +439,43 @@ function Dashboard() {
         <section className="space-y-3 glass rounded-2xl p-4">
           <h2 className="font-semibold">Trade parameters & risk</h2>
           <div className="grid grid-cols-3 gap-1 rounded-md bg-muted p-1 text-xs">
-            {(["SIDE_A", "SIDE_B", "SIGNAL"] as Mode[]).map((m) => (
+            {(def.single ? (["SIGNAL"] as Mode[]) : (["SIDE_A", "SIDE_B", "SIGNAL"] as Mode[])).map((m) => (
               <button key={m} onClick={() => setMode(m)} className={`rounded py-1.5 ${mode === m ? "bg-primary text-primary-foreground" : ""}`}>
-                {m === "SIDE_A" ? `Only ${def.sides[0].replace(/[▲▼] /, "")}` : m === "SIDE_B" ? `Only ${def.sides[1].replace(/[▲▼] /, "")}` : "Follow signal"}
+                {m === "SIDE_A" ? `Always ${def.sides[0].replace(/[▲▼] /, "")}` : m === "SIDE_B" ? `Always ${def.sides[1].replace(/[▲▼] /, "")}` : "Auto direction"}
               </button>
             ))}
           </div>
           <div className="grid grid-cols-2 gap-2">
             {num(stake, setStake, "Stake", 0.01)}
-            <div className="flex gap-1">
-              <div className="flex-1">{num(duration, setDuration, "Duration")}</div>
+            {!def.open && <div className="flex gap-1">
+              <div className="flex-1">{num(duration, (n) => setDuration(def.ticks ? Math.min(def.ticks[1], Math.max(def.ticks[0], Math.round(n))) : n), def.ticks ? `Ticks (${def.ticks[0]}-${def.ticks[1]})` : "Duration")}</div>
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">Unit
-                <select value={unit} disabled={def.digits} onChange={(e) => setUnit(e.target.value as Unit)} className={field}>
+                <select value={unit} disabled={def.digits || !!def.ticks} onChange={(e) => setUnit(e.target.value as Unit)} className={field}>
                   <option value="t">Ticks</option><option value="s">Seconds</option><option value="m">Minutes</option>
                 </select>
               </label>
-            </div>
+            </div>}
+            {def.extra === "selected_tick" && num(selectedTick, (n) => setSelectedTick(Math.max(1, Math.min(5, Math.round(n)))), "Predicted tick (1-5)")}
+            {def.extra === "multiplier" && num(multiplier, setMultiplier, "Multiplier (e.g. 100)")}
+            {def.extra === "growth_rate" && (
+              <label className="flex flex-col gap-1 text-xs text-muted-foreground">Growth rate
+                <select value={growthRate} onChange={(e) => setGrowthRate(Number(e.target.value))} className={field}>
+                  {[0.01, 0.02, 0.03, 0.04, 0.05].map((g) => <option key={g} value={g}>{g * 100}%</option>)}
+                </select>
+              </label>
+            )}
+            {def.open && num(tpAmt, setTpAmt, "Take profit (amount)", 0.1)}
+            {def.extra === "multiplier" && num(slAmt, setSlAmt, "Stop loss (amount)", 0.1)}
+            {kind === "RUNS" && (
+              <label className="col-span-2 flex flex-col gap-1 text-xs text-muted-foreground">Sensitivity: {["", "Very careful", "Careful", "Balanced", "Sensitive", "Very sensitive"][sensitivity]}
+                <input type="range" min={1} max={5} value={sensitivity} onChange={(e) => setSensitivity(Number(e.target.value))} />
+              </label>
+            )}
             {def.barrier === "digit" && num(digit, (n) => setDigit(Math.max(0, Math.min(9, Math.round(n)))), "Prediction digit (0-9)")}
             {def.barrier === "offset" && num(offset, setOffset, "Barrier offset (+/-)", 0.01)}
             {def.barrier === "range" && <>{num(hi, setHi, "High barrier offset (+)", 0.01)}{num(lo, setLo, "Low barrier offset (-)", 0.01)}</>}
             {num(minConf, setMinConf, "Min confidence %")}
-            {num(martingale, (n) => setMartingale(Math.min(2, Math.max(1, n))), "Loss multiplier (1-2)", 0.1)}
+            {num(cooldown, setCooldown, "Pause after trade (sec)")}
             {num(maxStake, setMaxStake, "Max stake cap", 0.1)}
             {num(lossStreakStop, setLossStreakStop, "Stop after N losses")}
             {num(maxLoss, setMaxLoss, "Loss limit")}
@@ -421,7 +487,7 @@ function Dashboard() {
           ) : (
             <button disabled={status !== "on"} onClick={startAuto} className="w-full rounded-md bg-up py-3 font-bold text-primary-foreground disabled:opacity-40">START AUTOPILOT</button>
           )}
-          <p className="text-xs text-muted-foreground">No strategy guarantees profit. Autopilot stops at your loss limit, profit target, trade cap or loss streak.</p>
+          <p className="text-xs text-muted-foreground">No strategy guarantees profit. Autopilot runs on demo accounts only, uses a fixed stake (no martingale), pauses after each trade, and stops at your loss limit, profit target, trade cap or loss streak.</p>
         </section>
 
         <section className="glass rounded-2xl p-4 lg:col-span-2">
@@ -448,6 +514,9 @@ function Dashboard() {
             </table>
           </div>
         </section>
+
+        <Profiles settings={settings} onApply={applySettings} onLog={addLog} />
+        <Journal trades={trades} />
 
         <section className="glass rounded-2xl p-4">
           <h2 className="mb-2 font-semibold">Trade history</h2>

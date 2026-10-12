@@ -1,9 +1,23 @@
 // Deriv contract catalog, instrument catalog, and per-contract signals.
 import { computeSignal, ema } from "./deriv";
+import { runsSignal } from "./runs";
 
-export type Kind = "RISE_FALL" | "HIGHER_LOWER" | "TOUCH" | "OVER_UNDER" | "MATCH_DIFF" | "EVEN_ODD" | "ENDS" | "STAYS";
+export type Kind = "RUNS" | "RISE_FALL" | "HIGHER_LOWER" | "TOUCH" | "OVER_UNDER" | "MATCH_DIFF" | "EVEN_ODD" | "ENDS" | "STAYS" | "ASIANS" | "RESET" | "TICK_HL" | "MULT" | "ACCU";
 
-export const CONTRACTS: Record<Kind, { label: string; sides: [string, string]; types: [string, string]; barrier: "none" | "offset" | "digit" | "range"; digits: boolean }> = {
+export type ContractDef = {
+  label: string; sides: [string, string]; types: [string, string];
+  barrier: "none" | "offset" | "digit" | "range"; digits: boolean;
+  /** Fixed allowed tick durations (e.g. Only Ups 2-5). */
+  ticks?: [number, number];
+  /** No duration: closes on take-profit / stop-loss or manual sell. */
+  open?: boolean;
+  /** Only one side exists (Accumulators). */
+  single?: boolean;
+  extra?: "selected_tick" | "multiplier" | "growth_rate";
+};
+
+export const CONTRACTS: Record<Kind, ContractDef> = {
+  RUNS: { label: "Only Ups / Only Downs", sides: ["▲ Only Ups", "▼ Only Downs"], types: ["RUNHIGH", "RUNLOW"], barrier: "none", digits: false, ticks: [2, 5] },
   RISE_FALL: { label: "Rise / Fall", sides: ["▲ Rise", "▼ Fall"], types: ["CALL", "PUT"], barrier: "none", digits: false },
   HIGHER_LOWER: { label: "Higher / Lower", sides: ["▲ Higher", "▼ Lower"], types: ["CALL", "PUT"], barrier: "offset", digits: false },
   TOUCH: { label: "Touch / No Touch", sides: ["Touch", "No Touch"], types: ["ONETOUCH", "NOTOUCH"], barrier: "offset", digits: false },
@@ -12,6 +26,11 @@ export const CONTRACTS: Record<Kind, { label: string; sides: [string, string]; t
   EVEN_ODD: { label: "Digits Even / Odd", sides: ["Even", "Odd"], types: ["DIGITEVEN", "DIGITODD"], barrier: "none", digits: true },
   ENDS: { label: "Ends Between / Outside", sides: ["Ends Between", "Ends Outside"], types: ["EXPIRYRANGE", "EXPIRYMISS"], barrier: "range", digits: false },
   STAYS: { label: "Stays Between / Goes Outside", sides: ["Stays Between", "Goes Outside"], types: ["RANGE", "UPORDOWN"], barrier: "range", digits: false },
+  ASIANS: { label: "Asians Rise / Fall", sides: ["▲ Asian Rise", "▼ Asian Fall"], types: ["ASIANU", "ASIAND"], barrier: "none", digits: false, ticks: [5, 10] },
+  RESET: { label: "Reset Call / Reset Put", sides: ["▲ Reset Call", "▼ Reset Put"], types: ["RESETCALL", "RESETPUT"], barrier: "none", digits: false },
+  TICK_HL: { label: "High / Low Ticks", sides: ["High Tick", "Low Tick"], types: ["TICKHIGH", "TICKLOW"], barrier: "none", digits: false, ticks: [5, 5], extra: "selected_tick" },
+  MULT: { label: "Multipliers Up / Down", sides: ["▲ Multiplier Up", "▼ Multiplier Down"], types: ["MULTUP", "MULTDOWN"], barrier: "none", digits: false, open: true, extra: "multiplier" },
+  ACCU: { label: "Accumulators", sides: ["Accumulate", "—"], types: ["ACCU", "ACCU"], barrier: "none", digits: false, open: true, single: true, extra: "growth_rate" },
 };
 
 export type Inst = { symbol: string; name: string; group: string };
@@ -73,10 +92,22 @@ function stdevMoves(prices: number[]) {
 export type KindSignal = { side: 0 | 1 | null; confidence: number; note: string };
 
 /** Per-contract statistical signal. Probabilities are historical estimates, not guarantees. */
-export function kindSignal(kind: Kind, prices: number[], decimals: number, opts: { digit: number; offset: number; hi: number; lo: number; ticks: number }): KindSignal {
+export function kindSignal(kind: Kind, prices: number[], decimals: number, opts: { digit: number; offset: number; hi: number; lo: number; ticks: number; sensitivity?: number }): KindSignal {
   if (prices.length < 60) return { side: null, confidence: 0, note: "Collecting ticks…" };
   const base = computeSignal(prices);
-  if (kind === "RISE_FALL" || kind === "HIGHER_LOWER") {
+  if (kind === "RUNS") {
+    const r = runsSignal(prices, opts.ticks, opts.sensitivity ?? 3);
+    return { side: r.side, confidence: r.confidence, note: r.note };
+  }
+  if (kind === "ACCU") {
+    const sd0 = stdevMoves(prices) || 1e-9;
+    const recent = prices.slice(-20).slice(1).map((p, i, a) => Math.abs(p - (i ? a[i - 1]! : prices.at(-20)!)));
+    const calm = recent.reduce((a, b) => a + b, 0) / recent.length / sd0;
+    return calm < 0.9
+      ? { side: 0, confidence: Math.round(Math.min(90, 50 + (0.9 - calm) * 80)), note: `Calm market (${calm.toFixed(2)}× normal moves)` }
+      : { side: null, confidence: 30, note: `Moves ${calm.toFixed(2)}× normal — barrier break risk` };
+  }
+  if (kind === "RISE_FALL" || kind === "HIGHER_LOWER" || kind === "ASIANS" || kind === "RESET" || kind === "TICK_HL" || kind === "MULT") {
     return { side: base.dir === "CALL" ? 0 : base.dir === "PUT" ? 1 : null, confidence: base.confidence, note: base.note };
   }
   const sd = stdevMoves(prices) || 1e-9;

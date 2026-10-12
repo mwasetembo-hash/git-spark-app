@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FOREX_KEYS, PROVIDERS, type BrainVerdict, type ProviderId } from "@/lib/brain-providers";
+import { FOREX_KEYS, MODEL_PRESETS, PROVIDERS, type BrainVerdict, type ProviderId } from "@/lib/brain-providers";
 
 const LS = "mwase-brain-config";
 
@@ -63,7 +63,8 @@ export function BrainPanel({ getSnapshot, onVerdict, sides }: { getSnapshot: () 
             <div key={p.id} className="rounded-lg border border-border bg-background/30 p-2 text-xs">
               <div className="mb-1 flex justify-between"><b>{p.label}</b><span className={server[p.id] ? "text-up" : keys[p.env] ? "text-primary" : "text-muted-foreground"}>{server[p.id] ? "saved securely" : keys[p.env] ? "manual key" : "not set"}</span></div>
               <input type="password" placeholder={server[p.id] ? "Using saved key" : p.env} value={keys[p.env] ?? ""} onChange={(e) => { const k = { ...keys, [p.env]: e.target.value }; setKeys(k); save(k); }} className={`mb-1 w-full ${field}`} />
-              <input placeholder={`Model (default ${p.model})`} value={models[p.id] ?? ""} onChange={(e) => { const m = { ...models, [p.id]: e.target.value }; setModels(m); save(keys, m); }} className={`w-full ${field}`} />
+              <input list={`models-${p.id}`} placeholder={`Model (default ${p.model})`} value={models[p.id] ?? ""} onChange={(e) => { const m = { ...models, [p.id]: e.target.value }; setModels(m); save(keys, m); }} className={`w-full ${field}`} />
+              <datalist id={`models-${p.id}`}>{(MODEL_PRESETS[p.id] ?? []).map((m) => <option key={m} value={m} />)}</datalist>
             </div>
           ))}
           {FOREX_KEYS.map((f) => (
@@ -80,7 +81,7 @@ export function BrainPanel({ getSnapshot, onVerdict, sides }: { getSnapshot: () 
         <label className="flex flex-col gap-1 text-muted-foreground">Engine
           <select value={provider} onChange={(e) => { const p = e.target.value as ProviderId | "auto"; setProvider(p); save(keys, models, p); }} className={field}>
             <option value="auto">Auto (try each until one works)</option>
-            {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.label} · {models[p.id] || p.model}</option>)}
           </select>
         </label>
         <label className="flex flex-col gap-1 text-muted-foreground">Every (sec)
