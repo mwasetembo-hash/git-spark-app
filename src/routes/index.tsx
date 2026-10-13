@@ -65,6 +65,7 @@ function Dashboard() {
   const [available, setAvailable] = useState<Set<string> | null>(null);
   const lastSettle = useRef(0);
   const lastWaitLog = useRef(0);
+  const [halted, setHalted] = useState(false);
   const [maxLoss, setMaxLoss] = useState(20);
   const [takeProfit, setTakeProfit] = useState(10);
   const [maxTrades, setMaxTrades] = useState(50);
@@ -204,8 +205,29 @@ function Dashboard() {
     addLog(`Scan done: ${rows.length} instruments ranked`);
   };
 
+  // Pre-trade checks: every problem is reported before any order is sent.
+  const preflight = (side: 0 | 1, amount: number): string[] => {
+    const errs: string[] = [];
+    if (status !== "on" || !client.current) errs.push("Not connected to Deriv");
+    if (!account) errs.push("No account selected");
+    if (!(amount > 0)) errs.push("Stake must be above 0");
+    if (amount < 0.35) errs.push("Stake below Deriv minimum (0.35)");
+    if (amount > maxStake) errs.push(`Stake ${amount} above your cap ${maxStake}`);
+    if (balance != null && amount > balance) errs.push("Stake is larger than your balance");
+    if (def.single && side === 1) errs.push(`${def.label} has only one side`);
+    if (def.ticks && (duration < def.ticks[0] || duration > def.ticks[1])) errs.push(`${def.label} needs ${def.ticks[0]}-${def.ticks[1]} ticks`);
+    if (!def.open && !(duration > 0)) errs.push("Duration must be above 0");
+    if (def.barrier === "digit" && (digit < 0 || digit > 9)) errs.push("Digit must be 0-9");
+    if (kind === "RUNS" && !/^(R_|1HZ)/.test(symbol)) errs.push("Only Ups/Downs works on Volatility indices (R_ / 1s)");
+    if (prices.length < 20) errs.push("Waiting for live ticks");
+    if (halted) errs.push("Emergency stop is ON");
+    return errs;
+  };
+
   const placeTrade = useCallback(async (side: 0 | 1, amount: number) => {
     const c = client.current;
+    const errs = preflight(side, amount);
+    if (errs.length) { addLog(`Order blocked: ${errs.join("; ")}`); setError(errs.join(" · ")); return null; }
     if (!c || !account) return null;
     setBusy(true);
     const ct = def.types[side];
@@ -309,6 +331,7 @@ function Dashboard() {
   }, [auto, busy, prices.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startAuto = () => {
+    if (halted) { setError("Emergency stop is ON — release it first."); return; }
     if (!account?.isVirtual) { setError("Autopilot is locked to DEMO accounts. Switch to your demo (VRTC) account to run it."); return; }
     curStake.current = stake;
     streak.current = 0;
@@ -536,6 +559,33 @@ function Dashboard() {
           </div>
         </section>
 
+        <section className="glass space-y-2 rounded-2xl p-4">
+          <h2 className="font-semibold">Signal ticket</h2>
+          {(() => {
+            const side = sig.side ?? 0;
+            const checks = preflight(side, stake);
+            const rows: [string, string][] = [
+              ["Market", `${inst?.name ?? symbol}`],
+              ["Contract", sig.side === null ? "—" : def.types[side]],
+              ["Direction", sig.side === null ? "NO TRADE" : def.sides[side]],
+              ["Entry", last != null ? `Market @ ${last.toFixed(decimals)}` : "—"],
+              ["Stake / max loss", `${stake} (fixed)`],
+              ["Duration", def.open ? `Until TP ${tpAmt}${def.extra === "multiplier" ? ` / SL ${slAmt}` : ""}` : `${duration}${unit}`],
+              ["Confidence", `${sig.confidence}% (min ${minConf}%)`],
+              ["Regime", base.parts.find((p) => p.name === "Market regime")?.detail ?? "—"],
+              ["Reason", sig.note],
+            ];
+            const ready = sig.side !== null && sig.confidence >= minConf && checks.length === 0;
+            return (
+              <>
+                <div className="space-y-0.5 font-mono text-xs">{rows.map(([k, v]) => <div key={k} className="flex justify-between gap-2"><span className="text-muted-foreground">{k}</span><span className="text-right">{v}</span></div>)}</div>
+                <div className={`rounded-md px-2 py-1 text-xs font-semibold ${ready ? "bg-up/20 text-up" : "bg-down/20 text-down"}`}>{ready ? "APPROVED — ready to execute" : "REJECTED — " + (checks[0] ?? (sig.side === null ? "no setup" : "confidence too low"))}</div>
+                {checks.length > 1 && <ul className="list-disc pl-4 text-xs text-down">{checks.slice(1).map((c) => <li key={c}>{c}</li>)}</ul>}
+              </>
+            );
+          })()}
+          <button onClick={() => { const h = !halted; setHalted(h); if (h) setAuto(false); addLog(h ? "EMERGENCY STOP engaged" : "Emergency stop released"); }} className={`w-full rounded-md py-2 text-sm font-bold ${halted ? "bg-primary text-primary-foreground" : "bg-down text-primary-foreground"}`}>{halted ? "Release emergency stop" : "EMERGENCY STOP"}</button>
+        </section>
         <Profiles settings={settings} onApply={applySettings} onLog={addLog} />
         <Journal trades={trades} />
 
