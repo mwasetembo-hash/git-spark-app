@@ -54,7 +54,7 @@ function Dashboard() {
   const [offset, setOffset] = useState(0.5);
   const [hi, setHi] = useState(0.5);
   const [lo, setLo] = useState(-0.5);
-  const [minConf, setMinConf] = useState(75);
+  const [minConf, setMinConf] = useState(60);
   const [sensitivity, setSensitivity] = useState(3);
   const [cooldown, setCooldown] = useState(8);
   const [selectedTick, setSelectedTick] = useState(3);
@@ -64,6 +64,7 @@ function Dashboard() {
   const [slAmt, setSlAmt] = useState(1);
   const [available, setAvailable] = useState<Set<string> | null>(null);
   const lastSettle = useRef(0);
+  const lastWaitLog = useRef(0);
   const [maxLoss, setMaxLoss] = useState(20);
   const [takeProfit, setTakeProfit] = useState(10);
   const [maxTrades, setMaxTrades] = useState(50);
@@ -208,7 +209,7 @@ function Dashboard() {
     if (!c || !account) return null;
     setBusy(true);
     const ct = def.types[side];
-    if (!ctAvailable(ct)) { addLog(`${ct} is not offered on ${symbol} — pick another market`); setBusy(false); return null; }
+    if (!ctAvailable(ct)) addLog(`Note: ${ct} not listed for ${symbol} — asking Deriv for a quote anyway`);
     const req: Record<string, unknown> = {
       proposal: 1, amount: Number(amount.toFixed(2)), basis: "stake", contract_type: ct,
       currency: account.currency, underlying_symbol: symbol,
@@ -240,21 +241,39 @@ function Dashboard() {
       const gap = Date.now() - (g.__lastOrderAt ?? 0);
       if (gap < 1200) await sleep(1200 - gap);
       g.__lastOrderAt = Date.now();
-      // Validate with a proposal first; only buy a quote Deriv actually returned.
-      const p = await withBackoff(() => c.send(req));
-      if (!p?.proposal?.id) throw new Error(`No valid quote for ${ct} on ${symbol}`);
-      const price = Number(p.proposal.ask_price ?? amount);
-      addLog(`Quote ${ct}: ask ${price} payout ${p.proposal.payout ?? "—"}`);
-      const b: any = await withBackoff(() => c.send({ buy: p.proposal.id, price }));
-      const id = b.buy.contract_id as number;
+      // 1) Get a quote to validate the contract. 2) Buy that quote. Fallback: direct buy with parameters.
+      const { proposal: _p, ...params } = req;
+      let b: any = null;
+      let firstErr: any = null;
+      try {
+        const p = await withBackoff(() => c.send(req));
+        const q = p?.proposal;
+        if (!q?.id) throw new Error(`No valid quote for ${ct} on ${symbol}`);
+        const price = Number(q.ask_price ?? amount);
+        addLog(`Quote ${ct}: ask ${price} payout ${q.payout ?? "—"}`);
+        b = await withBackoff(() => c.send({ buy: q.id, price: Number((price * 1.05 + 0.01).toFixed(2)) }));
+      } catch (e: any) {
+        firstErr = e;
+        addLog(`Quote route failed (${e.message}) — trying direct order`);
+        try {
+          b = await withBackoff(() => c.send({ buy: 1, price: Number((amount * 1.05 + 0.01).toFixed(2)), parameters: params }));
+        } catch (e2: any) {
+          throw new Error(`${ct} on ${symbol} rejected by Deriv: ${e2.message || firstErr?.message}`);
+        }
+      }
+      const id = Number(b?.buy?.contract_id);
+      if (!id) throw new Error("Deriv did not confirm the order");
       setTrades((t) => [{ id, label, stake: amount, profit: null, symbol, time: new Date().toLocaleTimeString() }, ...t]);
       addLog(`BUY ${label} ${amount.toFixed(2)} on ${symbol} #${id}`);
       const result = await new Promise<number>((resolve) => {
-        const off = c.on("proposal_open_contract", (m) => {
-          const poc = m.proposal_open_contract;
-          if (poc.contract_id === id && poc.is_sold) { off(); resolve(Number(poc.profit)); }
-        });
-        c.send({ proposal_open_contract: 1, contract_id: id, subscribe: 1 }).catch(() => {});
+        let done = false;
+        const finish = (v: number) => { if (done) return; done = true; off(); clearInterval(poll); clearTimeout(cap); resolve(v); };
+        const check = (poc: any) => { if (poc && Number(poc.contract_id) === id && (poc.is_sold || poc.status === "won" || poc.status === "lost" || poc.is_expired)) finish(Number(poc.profit ?? 0)); };
+        const off = c.on("proposal_open_contract", (m) => check(m.proposal_open_contract));
+        c.send({ proposal_open_contract: 1, contract_id: id, subscribe: 1 }).then((m) => check(m?.proposal_open_contract)).catch(() => {});
+        // Poll every 3s in case the live stream drops; never leave the bot stuck.
+        const poll = setInterval(() => { c.send({ proposal_open_contract: 1, contract_id: id }).then((m) => check(m?.proposal_open_contract)).catch(() => {}); }, 3000);
+        const cap = setTimeout(() => { addLog(`#${id} still open after 3 min — releasing bot`); finish(0); }, def.open ? 30 * 60_000 : 180_000);
       });
       lastSettle.current = Date.now();
       setTrades((t) => t.map((x) => (x.id === id ? { ...x, profit: result } : x)));
@@ -275,10 +294,12 @@ function Dashboard() {
     if (streak.current >= lossStreakStop) { setAuto(false); addLog(`Stopped: ${streak.current} losses in a row`); return; }
     if (!account?.isVirtual) { setAuto(false); addLog("Stopped: autopilot runs on DEMO accounts only"); return; }
     if (Date.now() - lastSettle.current < cooldown * 1000) return;
-    if (sig.side === null || sig.confidence < minConf) return;
-    if (brainGate && (!brain || brain.side !== sig.side)) return;
-    if (mode === "SIDE_A" && sig.side !== 0) return;
-    if (mode === "SIDE_B" && sig.side !== 1) return;
+    const wait = (why: string) => { if (Date.now() - lastWaitLog.current > 15000) { lastWaitLog.current = Date.now(); addLog(`Waiting: ${why}`); } };
+    if (sig.side === null) return wait(sig.note);
+    if (sig.confidence < minConf) return wait(`confidence ${sig.confidence}% below your minimum ${minConf}%`);
+    if (brainGate && (!brain || brain.side !== sig.side)) return wait("AI Brain does not agree yet");
+    if (mode === "SIDE_A" && sig.side !== 0) return wait(`signal is ${def.sides[1]}, you chose ${def.sides[0]} only`);
+    if (mode === "SIDE_B" && sig.side !== 1) return wait(`signal is ${def.sides[0]}, you chose ${def.sides[1]} only`);
     const amt = curStake.current;
     placeTrade(sig.side, amt).then((r) => {
       if (r == null) return;
