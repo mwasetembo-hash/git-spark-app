@@ -181,3 +181,9 @@ html, body { background: #02030d; }
   box-shadow: 0 10px 40px -10px oklch(0.5 0.2 260 / 0.45), inset 0 1px 0 oklch(1 0 0 / 0.06);
 }
 @utility text-glow { text-shadow: 0 0 18px color-mix(in oklch, var(--primary) 70%, transparent); }
+
+@utility chart-3d {
+  perspective: 900px;
+  & > svg { transform: rotateX(14deg); transform-origin: bottom; filter: drop-shadow(0 12px 18px color-mix(in oklch, var(--up) 35%, transparent)); transition: transform .4s; }
+  &:hover > svg { transform: rotateX(4deg); }
+}
