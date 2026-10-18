@@ -182,6 +182,20 @@ html, body { background: #02030d; }
 }
 @utility text-glow { text-shadow: 0 0 18px color-mix(in oklch, var(--primary) 70%, transparent); }
 
+.workspace-band {
+  padding: 1.25rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.digit-distribution { min-height: 190px; }
+@media (max-width: 640px) {
+  main input, main select { max-width: 100%; min-width: 0; }
+  main section, main section > div { min-width: 0; }
+  .workspace-band { padding-top: .5rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chart-3d > svg { transition: none; }
+}
+
 @utility chart-3d {
   perspective: 900px;
   & > svg { transform: rotateX(14deg); transform-origin: bottom; filter: drop-shadow(0 12px 18px color-mix(in oklch, var(--up) 35%, transparent)); transition: transform .4s; }

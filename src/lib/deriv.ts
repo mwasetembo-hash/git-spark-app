@@ -52,7 +52,7 @@ export async function fetchOtpUrl(appId: string, token: string, accountId: strin
 export class DerivClient {
   private ws: WebSocket | null = null;
   private reqId = 1;
-  private pending = new Map<number, { resolve: (m: any) => void; reject: (e: any) => void }>();
+  private pending = new Map<number, { resolve: (m: any) => void; reject: (e: any) => void; timer: ReturnType<typeof setTimeout> }>();
   private subs = new Map<string, Set<Handler>>();
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   onClose: (() => void) | null = null;
@@ -77,7 +77,7 @@ export class DerivClient {
       };
       ws.onclose = () => {
         if (this.pingTimer) clearInterval(this.pingTimer);
-        this.pending.forEach((p) => p.reject(new Error("Connection closed")));
+        this.pending.forEach((p) => { clearTimeout(p.timer); p.reject(new Error("Connection closed")); });
         this.pending.clear();
         this.onClose?.();
       };
@@ -85,7 +85,9 @@ export class DerivClient {
         const msg = JSON.parse(ev.data);
         const id = msg.req_id as number | undefined;
         if (id && this.pending.has(id)) {
-          const p = this.pending.get(id)!;
+          const p = this.pending.get(id);
+          if (!p) return;
+          clearTimeout(p.timer);
           this.pending.delete(id);
           msg.error ? p.reject(new Error(msg.error.message)) : p.resolve(msg);
         }
@@ -99,7 +101,8 @@ export class DerivClient {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return reject(new Error("Not connected"));
       const req_id = this.reqId++;
-      this.pending.set(req_id, { resolve, reject });
+      const timer = setTimeout(() => { this.pending.delete(req_id); reject(new Error("Deriv request timed out — confirmation unavailable")); }, 20_000);
+      this.pending.set(req_id, { resolve, reject, timer });
       this.ws.send(JSON.stringify({ ...payload, req_id }));
     });
   }
@@ -111,6 +114,8 @@ export class DerivClient {
   }
 
   close() {
+    this.pending.forEach((p) => { clearTimeout(p.timer); p.reject(new Error("Connection closed")); });
+    this.pending.clear();
     if (this.ws) this.ws.onclose = null;
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.ws?.close();

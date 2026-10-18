@@ -9,6 +9,8 @@ import type { BrainVerdict } from "@/lib/brain-providers";
 import { runsSignal } from "@/lib/runs";
 import { Journal } from "@/components/Journal";
 import { Profiles } from "@/components/Profiles";
+import { TradingWorkspace } from "@/components/TradingWorkspace";
+import { automationBlock, bulkSide, patternSignal, type StrategyId } from "@/lib/trading-workspace";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -73,6 +75,16 @@ function Dashboard() {
   const [lossStreakStop, setLossStreakStop] = useState(3);
   const [auto, setAuto] = useState(false);
   const [busy, setBusy] = useState(false);
+  const orderLock = useRef(false);
+  const [strategy, setStrategy] = useState<StrategyId>("hybrid");
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkCompleted, setBulkCompleted] = useState(0);
+  const [bulkCount, setBulkCount] = useState(9);
+  const [bulkDirection, setBulkDirection] = useState<"signal" | "alternate" | "up" | "down">("signal");
+  const bulkActive = useRef(false);
+  const stopRef = useRef(false);
+  stopRef.current = halted;
+  const [clock, setClock] = useState(0);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [log, setLog] = useState<string[]>([]);
   const [scan, setScan] = useState<ScanRow[]>([]);
@@ -104,9 +116,10 @@ function Dashboard() {
     if (def.single) setMode("SIGNAL");
   }, [kind]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const settings = { symbol, kind, mode, stake, duration, unit, digit, offset, hi, lo, minConf, maxLoss, takeProfit, maxTrades, lossStreakStop, sensitivity, cooldown, selectedTick, multiplier, growthRate, tpAmt, slAmt, brainGate };
+  const settings = { symbol, kind, mode, stake, duration, unit, digit, offset, hi, lo, minConf, maxLoss, takeProfit, maxTrades, lossStreakStop, sensitivity, cooldown, selectedTick, multiplier, growthRate, tpAmt, slAmt, brainGate, strategy };
   const applySettings = (c: Partial<typeof settings>) => {
-    const set: Record<string, (v: any) => void> = { symbol: setSymbol, kind: setKind, mode: setMode, stake: setStake, duration: setDuration, unit: setUnit, digit: setDigit, offset: setOffset, hi: setHi, lo: setLo, minConf: setMinConf, maxLoss: setMaxLoss, takeProfit: setTakeProfit, maxTrades: setMaxTrades, lossStreakStop: setLossStreakStop, sensitivity: setSensitivity, cooldown: setCooldown, selectedTick: setSelectedTick, multiplier: setMultiplier, growthRate: setGrowthRate, tpAmt: setTpAmt, slAmt: setSlAmt, brainGate: setBrainGate };
+    if (orderLock.current || bulkActive.current || auto) return;
+    const set: Record<string, (v: any) => void> = { symbol: setSymbol, kind: setKind, mode: setMode, stake: setStake, duration: setDuration, unit: setUnit, digit: setDigit, offset: setOffset, hi: setHi, lo: setLo, minConf: setMinConf, maxLoss: setMaxLoss, takeProfit: setTakeProfit, maxTrades: setMaxTrades, lossStreakStop: setLossStreakStop, sensitivity: setSensitivity, cooldown: setCooldown, selectedTick: setSelectedTick, multiplier: setMultiplier, growthRate: setGrowthRate, tpAmt: setTpAmt, slAmt: setSlAmt, brainGate: setBrainGate, strategy: setStrategy };
     for (const [k, v] of Object.entries(c)) if (set[k] && v !== undefined) set[k]!(v);
   };
 
@@ -114,11 +127,25 @@ function Dashboard() {
   const settled = trades.filter((t) => t.profit !== null);
   const wins = settled.filter((t) => (t.profit ?? 0) > 0).length;
   const ticksEq = unit === "t" ? duration : unit === "s" ? duration / 2 : duration * 30;
-  const sig = kindSignal(kind, prices, decimals, { digit, offset, hi, lo, ticks: ticksEq, sensitivity });
+  const contractSignal = kindSignal(kind, prices, decimals, { digit, offset, hi, lo, ticks: ticksEq, sensitivity });
+  const pattern = patternSignal(strategy, prices);
+  const sig = strategy === "hybrid" ? contractSignal : pattern.side !== null && pattern.side === contractSignal.side
+    ? { ...contractSignal, confidence: Math.min(contractSignal.confidence, pattern.confidence), note: `${contractSignal.note} · ${pattern.note}` }
+    : { side: null, confidence: 0, note: `Pattern filter: ${pattern.note}` };
   const runs = kind === "RUNS" ? runsSignal(prices, duration, sensitivity) : null;
   const ctAvailable = (t: string) => !available || available.has(t);
   const base = computeSignal(prices);
   const stats = def.digits ? digitStats(prices, decimals) : null;
+  const executionBlocked = automationBlock({ connected: status === "on", demo: !!account?.isVirtual, halted, net, maxLoss, target: takeProfit, trades: trades.length, maxTrades, losses: streak.current, maxLosses: lossStreakStop, unresolved: trades.some((t) => t.profit === null) });
+  useEffect(() => { const timer = setInterval(() => setClock((n) => n + 1), 1000); return () => clearInterval(timer); }, []);
+  const stopBulk = () => { bulkActive.current = false; setBulkRunning(false); addLog("Bulk session stopped — purchased orders remain open until settlement"); };
+  const startBulk = () => {
+    const errs = preflight(bulkDirection === "down" ? 1 : 0, stake);
+    if (executionBlocked || errs.length || auto || orderLock.current) { setError(executionBlocked ?? errs[0] ?? "Stop autopilot before bulk trading"); return; }
+    if (def.single && (bulkDirection === "down" || bulkDirection === "alternate")) { setError("This contract has only one side"); return; }
+    setBulkCompleted(0); bulkActive.current = true; setBulkRunning(true);
+    addLog(`Demo bulk session started: ${bulkCount} sequential fixed-stake contracts`);
+  };
 
   const connect = async () => {
     setError("");
@@ -138,7 +165,7 @@ function Dashboard() {
       client.current?.close();
       const c = new DerivClient();
       client.current = c;
-      c.onClose = () => { setStatus("off"); setAuto(false); addLog("Disconnected — press Connect to reopen"); };
+      c.onClose = () => { setStatus("off"); setAuto(false); bulkActive.current = false; setBulkRunning(false); addLog("Disconnected — press Connect to reopen"); };
       await c.connect(url);
       const isVirtual = acc.account_type === "demo";
       setAccount({ loginid: acc.account_id, currency: acc.currency, isVirtual });
@@ -208,6 +235,7 @@ function Dashboard() {
   // Pre-trade checks: every problem is reported before any order is sent.
   const preflight = (side: 0 | 1, amount: number): string[] => {
     const errs: string[] = [];
+    if (!Number.isFinite(amount)) errs.push("Stake must be a finite number");
     if (status !== "on" || !client.current) errs.push("Not connected to Deriv");
     if (!account) errs.push("No account selected");
     if (!(amount > 0)) errs.push("Stake must be above 0");
@@ -217,18 +245,24 @@ function Dashboard() {
     if (def.single && side === 1) errs.push(`${def.label} has only one side`);
     if (def.ticks && (duration < def.ticks[0] || duration > def.ticks[1])) errs.push(`${def.label} needs ${def.ticks[0]}-${def.ticks[1]} ticks`);
     if (!def.open && !(duration > 0)) errs.push("Duration must be above 0");
+    if (!def.open && !Number.isInteger(duration)) errs.push("Duration must be a whole number");
+    if (def.ticks && unit !== "t") errs.push("This contract requires tick duration");
     if (def.barrier === "digit" && (digit < 0 || digit > 9)) errs.push("Digit must be 0-9");
     if (kind === "RUNS" && !/^(R_|1HZ)/.test(symbol)) errs.push("Only Ups/Downs works on Volatility indices (R_ / 1s)");
     if (prices.length < 20) errs.push("Waiting for live ticks");
     if (halted) errs.push("Emergency stop is ON");
+    if (available && !available.has(def.types[side])) errs.push(`${def.types[side]} is not available on ${symbol}`);
+    if (trades.some((t) => t.profit === null)) errs.push("Wait for the open order to settle");
     return errs;
   };
 
   const placeTrade = useCallback(async (side: 0 | 1, amount: number) => {
+    if (orderLock.current) return null;
     const c = client.current;
     const errs = preflight(side, amount);
     if (errs.length) { addLog(`Order blocked: ${errs.join("; ")}`); setError(errs.join(" · ")); return null; }
     if (!c || !account) return null;
+    orderLock.current = true;
     setBusy(true);
     const ct = def.types[side];
     if (!ctAvailable(ct)) addLog(`Note: ${ct} not listed for ${symbol} — asking Deriv for a quote anyway`);
@@ -263,41 +297,37 @@ function Dashboard() {
       const gap = Date.now() - (g.__lastOrderAt ?? 0);
       if (gap < 1200) await sleep(1200 - gap);
       g.__lastOrderAt = Date.now();
-      // 1) Get a quote to validate the contract. 2) Buy that quote. Fallback: direct buy with parameters.
-      const { proposal: _p, ...params } = req;
-      let b: any = null;
-      let firstErr: any = null;
-      try {
-        const p = await withBackoff(() => c.send(req));
-        const q = p?.proposal;
-        if (!q?.id) throw new Error(`No valid quote for ${ct} on ${symbol}`);
-        const price = Number(q.ask_price ?? amount);
-        addLog(`Quote ${ct}: ask ${price} payout ${q.payout ?? "—"}`);
-        b = await withBackoff(() => c.send({ buy: q.id, price: Number((price * 1.05 + 0.01).toFixed(2)) }));
-      } catch (e: any) {
-        firstErr = e;
-        addLog(`Quote route failed (${e.message}) — trying direct order`);
-        try {
-          b = await withBackoff(() => c.send({ buy: 1, price: Number((amount * 1.05 + 0.01).toFixed(2)), parameters: params }));
-        } catch (e2: any) {
-          throw new Error(`${ct} on ${symbol} rejected by Deriv: ${e2.message || firstErr?.message}`);
-        }
+      // Quote first; never resubmit an ambiguous purchase as a second direct buy.
+      const p = await withBackoff(() => c.send(req));
+      const q = p?.proposal;
+      if (!q?.id) throw new Error(`No valid quote for ${ct} on ${symbol}`);
+      const price = Number(q.ask_price);
+      if (!Number.isFinite(price) || price <= 0 || price > amount || price > maxStake || (balance != null && price > balance)) throw new Error("Quote exceeds the fixed stake or balance");
+      if (stopRef.current || (bulkRunning && !bulkActive.current) || status !== "on") throw new Error("Order cancelled before purchase");
+      addLog(`Quote ${ct}: ask ${price} payout ${q.payout ?? "—"}`);
+      let b: any;
+      try { b = await c.send({ buy: q.id, price }); }
+      catch (e) {
+        if (/timed out|connection closed/i.test(String(e))) { setHalted(true); stopRef.current = true; setAuto(false); bulkActive.current = false; setBulkRunning(false); addLog("Purchase confirmation uncertain — reconcile Deriv transactions before releasing emergency stop"); }
+        throw e;
       }
       const id = Number(b?.buy?.contract_id);
       if (!id) throw new Error("Deriv did not confirm the order");
       setTrades((t) => [{ id, label, stake: amount, profit: null, symbol, time: new Date().toLocaleTimeString() }, ...t]);
       addLog(`BUY ${label} ${amount.toFixed(2)} on ${symbol} #${id}`);
-      const result = await new Promise<number>((resolve) => {
+      const result = await new Promise<number | null>((resolve) => {
         let done = false;
-        const finish = (v: number) => { if (done) return; done = true; off(); clearInterval(poll); clearTimeout(cap); resolve(v); };
-        const check = (poc: any) => { if (poc && Number(poc.contract_id) === id && (poc.is_sold || poc.status === "won" || poc.status === "lost" || poc.is_expired)) finish(Number(poc.profit ?? 0)); };
+        const finish = (v: number | null) => { if (done) return; done = true; off(); clearInterval(poll); clearTimeout(cap); resolve(v); };
+        const check = (poc: any) => { if (poc && Number(poc.contract_id) === id && (poc.is_sold || poc.status === "won" || poc.status === "lost")) finish(Number(poc.profit ?? 0)); };
         const off = c.on("proposal_open_contract", (m) => check(m.proposal_open_contract));
         c.send({ proposal_open_contract: 1, contract_id: id, subscribe: 1 }).then((m) => check(m?.proposal_open_contract)).catch(() => {});
         // Poll every 3s in case the live stream drops; never leave the bot stuck.
         const poll = setInterval(() => { c.send({ proposal_open_contract: 1, contract_id: id }).then((m) => check(m?.proposal_open_contract)).catch(() => {}); }, 3000);
-        const cap = setTimeout(() => { addLog(`#${id} still open after 3 min — releasing bot`); finish(0); }, def.open ? 30 * 60_000 : 180_000);
+        const cap = setTimeout(() => { addLog(`#${id} settlement unconfirmed — trading stopped; check Deriv transactions`); setHalted(true); stopRef.current = true; setAuto(false); bulkActive.current = false; setBulkRunning(false); finish(null); }, def.open ? 30 * 60_000 : Math.max(180_000, (unit === "m" ? duration * 60_000 : unit === "s" ? duration * 1000 : duration * 2000) + 60_000));
       });
       lastSettle.current = Date.now();
+      if (result === null) return null;
+      streak.current = result > 0 ? 0 : streak.current + 1;
       setTrades((t) => t.map((x) => (x.id === id ? { ...x, profit: result } : x)));
       addLog(`${result > 0 ? "WIN" : "LOSS"} #${id}: ${result.toFixed(2)}`);
       return result;
@@ -305,11 +335,26 @@ function Dashboard() {
       addLog(`Order error: ${e.message}`);
       setError(e.message);
       return null;
-    } finally { setBusy(false); }
-  }, [account, duration, unit, symbol, def, digit, offset, hi, lo, selectedTick, multiplier, growthRate, tpAmt, slAmt, available]); // eslint-disable-line react-hooks/exhaustive-deps
+    } finally { orderLock.current = false; setBusy(false); }
+  }, [account, duration, unit, symbol, def, digit, offset, hi, lo, selectedTick, multiplier, growthRate, tpAmt, slAmt, available, status, prices.length, halted, maxStake, balance, trades, bulkRunning]);
+
+  useEffect(() => {
+    if (!bulkRunning || !bulkActive.current || busy || orderLock.current) return;
+    if (bulkCompleted >= bulkCount) { bulkActive.current = false; setBulkRunning(false); addLog("Demo bulk session completed"); return; }
+    if (executionBlocked) { stopBulk(); setError(executionBlocked); return; }
+    if (Date.now() - lastSettle.current < Math.max(0, cooldown) * 1000) return;
+    const side = bulkSide(bulkDirection, bulkCompleted, sig.side);
+    if (side === null || (bulkDirection === "signal" && sig.confidence < minConf)) return;
+    if (brainGate && (!brain || brain.side !== side)) return;
+    placeTrade(side, stake).then((result) => {
+      if (result === null) { bulkActive.current = false; setBulkRunning(false); }
+      else setBulkCompleted((n) => n + 1);
+    });
+  }, [clock, bulkRunning, bulkCompleted, bulkCount, busy, executionBlocked, sig.side, sig.confidence, bulkDirection, cooldown, brainGate, brain, stake, minConf, placeTrade]);
 
   useEffect(() => {
     if (!auto || busy || status !== "on") return;
+    if (executionBlocked) { setAuto(false); addLog(`Stopped: ${executionBlocked}`); return; }
     if (net <= -maxLoss) { setAuto(false); addLog("Stopped: loss limit reached"); return; }
     if (net >= takeProfit) { setAuto(false); addLog("Stopped: profit target reached"); return; }
     if (trades.length >= maxTrades) { setAuto(false); addLog("Stopped: max trades reached"); return; }
@@ -325,16 +370,16 @@ function Dashboard() {
     const amt = curStake.current;
     placeTrade(sig.side, amt).then((r) => {
       if (r == null) return;
-      streak.current = r > 0 ? 0 : streak.current + 1;
       curStake.current = Math.min(stake, maxStake); // fixed stake — no martingale
     });
-  }, [auto, busy, prices.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [auto, busy, prices.length, clock, executionBlocked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startAuto = () => {
+    if (bulkActive.current || orderLock.current) { setError("Stop bulk trading and wait for settlement first"); return; }
+    if (executionBlocked) { setError(executionBlocked); return; }
     if (halted) { setError("Emergency stop is ON — release it first."); return; }
     if (!account?.isVirtual) { setError("Autopilot is locked to DEMO accounts. Switch to your demo (VRTC) account to run it."); return; }
     curStake.current = stake;
-    streak.current = 0;
     setAuto(true);
     addLog(`Autopilot ON (${def.label})`);
   };
@@ -370,6 +415,7 @@ function Dashboard() {
       </header>
 
       <main className="mx-auto grid max-w-7xl gap-4 p-4 lg:grid-cols-3">
+        <TradingWorkspace prices={prices} decimals={decimals} symbol={symbol} kind={kind} digit={digit} setDigit={setDigit} strategy={strategy} setStrategy={setStrategy} signal={sig} stake={stake} ticks={duration} minConf={minConf} sensitivity={sensitivity} connected={status === "on"} demo={!!account?.isVirtual} busy={busy} blocked={auto ? "Stop autopilot before starting bulk trading" : executionBlocked} bulkRunning={bulkRunning} bulkCompleted={bulkCompleted} bulkCount={bulkCount} setBulkCount={setBulkCount} bulkDirection={bulkDirection} setBulkDirection={setBulkDirection} startBulk={startBulk} stopBulk={stopBulk} />
         <section className="space-y-3 glass rounded-2xl p-4">
           <h2 className="font-semibold">Deriv connection</h2>
           <label className="block text-xs text-muted-foreground">App ID
@@ -584,7 +630,7 @@ function Dashboard() {
               </>
             );
           })()}
-          <button onClick={() => { const h = !halted; setHalted(h); if (h) setAuto(false); addLog(h ? "EMERGENCY STOP engaged" : "Emergency stop released"); }} className={`w-full rounded-md py-2 text-sm font-bold ${halted ? "bg-primary text-primary-foreground" : "bg-down text-primary-foreground"}`}>{halted ? "Release emergency stop" : "EMERGENCY STOP"}</button>
+          <button onClick={() => { const h = !halted; stopRef.current = h; setHalted(h); if (h) { setAuto(false); bulkActive.current = false; setBulkRunning(false); } addLog(h ? "EMERGENCY STOP engaged" : "Emergency stop released"); }} className={`w-full rounded-md py-2 text-sm font-bold ${halted ? "bg-primary text-primary-foreground" : "bg-down text-primary-foreground"}`}>{halted ? "Release emergency stop" : "EMERGENCY STOP"}</button>
         </section>
         <Profiles settings={settings} onApply={applySettings} onLog={addLog} />
         <Journal trades={trades} />
