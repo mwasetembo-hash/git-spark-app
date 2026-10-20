@@ -144,6 +144,149 @@ export const DEFAULT_MULTI_STRATEGY: MultiStrategyConfig = {
   structureWeight: 14,
 };
 
+export type PatternFamily = "chart" | "candlestick" | "market-structure" | "smc" | "harmonic" | "indicator" | "combination";
+export type PatternDefinition = {
+  id: string;
+  family: PatternFamily;
+  name: string;
+  longName: string;
+  bullishBias: "bullish" | "bearish" | "neutral";
+  summary: string;
+};
+
+export const PATTERN_LIBRARY: PatternDefinition[] = [
+  { id: "head-and-shoulders", family: "chart", name: "Head & Shoulders", longName: "Head and Shoulders", bullishBias: "bearish", summary: "Three-peak reversal structure with neckline break confirmation." },
+  { id: "inverse-head-and-shoulders", family: "chart", name: "Inverse H&S", longName: "Inverse Head and Shoulders", bullishBias: "bullish", summary: "Three-trough bullish reversal structure with neckline break." },
+  { id: "double-top", family: "chart", name: "Double Top", longName: "Double Top", bullishBias: "bearish", summary: "Two failed swing highs near resistance." },
+  { id: "double-bottom", family: "chart", name: "Double Bottom", longName: "Double Bottom", bullishBias: "bullish", summary: "Two failed swing lows near support." },
+  { id: "triple-top", family: "chart", name: "Triple Top", longName: "Triple Top", bullishBias: "bearish", summary: "Three failed highs increase reversal probability." },
+  { id: "triple-bottom", family: "chart", name: "Triple Bottom", longName: "Triple Bottom", bullishBias: "bullish", summary: "Three failed lows increase reversal probability." },
+  { id: "ascending-triangle", family: "chart", name: "Ascending Triangle", longName: "Ascending Triangle", bullishBias: "bullish", summary: "Higher lows compress into flat resistance." },
+  { id: "descending-triangle", family: "chart", name: "Descending Triangle", longName: "Descending Triangle", bullishBias: "bearish", summary: "Lower highs compress into flat support." },
+  { id: "symmetrical-triangle", family: "chart", name: "Symmetrical Triangle", longName: "Symmetrical Triangle", bullishBias: "neutral", summary: "Compression before breakout in either direction." },
+  { id: "bull-flag", family: "chart", name: "Bull Flag", longName: "Bull Flag", bullishBias: "bullish", summary: "Strong impulse followed by short consolidation." },
+  { id: "bear-flag", family: "chart", name: "Bear Flag", longName: "Bear Flag", bullishBias: "bearish", summary: "Strong decline followed by short consolidation." },
+  { id: "bull-pennant", family: "chart", name: "Bull Pennant", longName: "Bull Pennant", bullishBias: "bullish", summary: "Consolidation after an impulsive move." },
+  { id: "bear-pennant", family: "chart", name: "Bear Pennant", longName: "Bear Pennant", bullishBias: "bearish", summary: "Consolidation after a strong directional move." },
+  { id: "rising-wedge", family: "chart", name: "Rising Wedge", longName: "Rising Wedge", bullishBias: "bearish", summary: "Price compresses upward before reversal risk." },
+  { id: "falling-wedge", family: "chart", name: "Falling Wedge", longName: "Falling Wedge", bullishBias: "bullish", summary: "Price compresses downward before upside risk." },
+  { id: "rectangle-range", family: "chart", name: "Rectangle / Range", longName: "Rectangle or Range", bullishBias: "neutral", summary: "Range bounce or breakout between support and resistance." },
+  { id: "cup-and-handle", family: "chart", name: "Cup & Handle", longName: "Cup and Handle", bullishBias: "bullish", summary: "Rounded base with brief tightening before continuation." },
+  { id: "inverted-cup-and-handle", family: "chart", name: "Inverted Cup & Handle", longName: "Inverted Cup and Handle", bullishBias: "bearish", summary: "Rounded top with brief tightening before downward continuation." },
+  { id: "rounding-bottom", family: "chart", name: "Rounding Bottom", longName: "Rounding Bottom", bullishBias: "bullish", summary: "Long gradual reversal from bearish to bullish pressure." },
+  { id: "rounding-top", family: "chart", name: "Rounding Top", longName: "Rounding Top", bullishBias: "bearish", summary: "Gradual transition from bullish to bearish pressure." },
+  { id: "broadening-formation", family: "chart", name: "Broadening Formation", longName: "Broadening Formation", bullishBias: "neutral", summary: "Volatility expands and structure widens." },
+  { id: "ascending-broadening-wedge", family: "chart", name: "Ascending Broadening Wedge", longName: "Ascending Broadening Wedge", bullishBias: "bearish", summary: "Expanding uptrend with reversal risk." },
+  { id: "descending-broadening-wedge", family: "chart", name: "Descending Broadening Wedge", longName: "Descending Broadening Wedge", bullishBias: "bullish", summary: "Expanding downtrend with reversal risk." },
+  { id: "diamond-top", family: "chart", name: "Diamond Top", longName: "Diamond Top", bullishBias: "bearish", summary: "Broadening structure loses momentum at the top." },
+  { id: "diamond-bottom", family: "chart", name: "Diamond Bottom", longName: "Diamond Bottom", bullishBias: "bullish", summary: "Broadening structure loses momentum at the bottom." },
+  { id: "megaphone-pattern", family: "chart", name: "Megaphone", longName: "Megaphone Pattern", bullishBias: "neutral", summary: "Trend line widening indicates volatility expansion." },
+  { id: "measured-move", family: "chart", name: "Measured Move", longName: "Measured Move", bullishBias: "neutral", summary: "Projected move based on prior impulse length." },
+  { id: "ab-cd", family: "harmonic", name: "AB=CD", longName: "AB=CD", bullishBias: "neutral", summary: "Two related legs with equal swing lengths." },
+  { id: "gartley", family: "harmonic", name: "Gartley", longName: "Gartley", bullishBias: "neutral", summary: "Classic harmonic structure using Fibonacci ratios." },
+  { id: "bat", family: "harmonic", name: "Bat", longName: "Bat", bullishBias: "neutral", summary: "Deeper retracement harmonic pattern." },
+  { id: "butterfly", family: "harmonic", name: "Butterfly", longName: "Butterfly", bullishBias: "neutral", summary: "Extended harmonic reversal pattern." },
+  { id: "crab", family: "harmonic", name: "Crab", longName: "Crab", bullishBias: "neutral", summary: "Deep extended harmonic reversal form." },
+  { id: "deep-crab", family: "harmonic", name: "Deep Crab", longName: "Deep Crab", bullishBias: "neutral", summary: "More extreme extension than a standard crab pattern." },
+  { id: "shark", family: "harmonic", name: "Shark", longName: "Shark", bullishBias: "neutral", summary: "Five-point harmonic pattern with deep retracement." },
+  { id: "cypher", family: "harmonic", name: "Cypher", longName: "Cypher", bullishBias: "neutral", summary: "Harmonic pattern with distinctive C-point extension." },
+  { id: "three-drives", family: "harmonic", name: "Three Drives", longName: "Three Drives", bullishBias: "neutral", summary: "Three directional pushes before reversal or continuation." },
+  { id: "hammer", family: "candlestick", name: "Hammer", longName: "Hammer", bullishBias: "bullish", summary: "Lower-price rejection with short body and long wick." },
+  { id: "inverted-hammer", family: "candlestick", name: "Inverted Hammer", longName: "Inverted Hammer", bullishBias: "bullish", summary: "Upper-price rejection near support." },
+  { id: "bullish-engulfing", family: "candlestick", name: "Bullish Engulfing", longName: "Bullish Engulfing", bullishBias: "bullish", summary: "Large bullish candle overwhelms prior bearish one." },
+  { id: "morning-star", family: "candlestick", name: "Morning Star", longName: "Morning Star", bullishBias: "bullish", summary: "Three-candle reversal pattern with a bearish gap." },
+  { id: "three-white-soldiers", family: "candlestick", name: "Three White Soldiers", longName: "Three White Soldiers", bullishBias: "bullish", summary: "Three strong bullish candles in sequence." },
+  { id: "piercing-line", family: "candlestick", name: "Piercing Line", longName: "Piercing Line", bullishBias: "bullish", summary: "Bullish candle closes deeply into prior bearish body." },
+  { id: "tweezer-bottom", family: "candlestick", name: "Tweezer Bottom", longName: "Tweezer Bottom", bullishBias: "bullish", summary: "Two candles reject similar lows." },
+  { id: "bullish-harami", family: "candlestick", name: "Bullish Harami", longName: "Bullish Harami", bullishBias: "bullish", summary: "Small bullish candle inside larger bearish body." },
+  { id: "shooting-star", family: "candlestick", name: "Shooting Star", longName: "Shooting Star", bullishBias: "bearish", summary: "Upper-price rejection after an advance." },
+  { id: "hanging-man", family: "candlestick", name: "Hanging Man", longName: "Hanging Man", bullishBias: "bearish", summary: "Possible bearish reversal after an uptrend." },
+  { id: "bearish-engulfing", family: "candlestick", name: "Bearish Engulfing", longName: "Bearish Engulfing", bullishBias: "bearish", summary: "Large bearish candle overwhelms prior bullish one." },
+  { id: "evening-star", family: "candlestick", name: "Evening Star", longName: "Evening Star", bullishBias: "bearish", summary: "Three-candle reversal pattern with bullish gap." },
+  { id: "three-black-crows", family: "candlestick", name: "Three Black Crows", longName: "Three Black Crows", bullishBias: "bearish", summary: "Three strong bearish candles in sequence." },
+  { id: "dark-cloud-cover", family: "candlestick", name: "Dark Cloud Cover", longName: "Dark Cloud Cover", bullishBias: "bearish", summary: "Bearish candle closes deeply into prior bullish body." },
+  { id: "tweezer-top", family: "candlestick", name: "Tweezer Top", longName: "Tweezer Top", bullishBias: "bearish", summary: "Two candles reject similar highs." },
+  { id: "bearish-harami", family: "candlestick", name: "Bearish Harami", longName: "Bearish Harami", bullishBias: "bearish", summary: "Small bearish candle inside larger bullish body." },
+  { id: "doji", family: "candlestick", name: "Doji", longName: "Doji", bullishBias: "neutral", summary: "Indecision candle with little net movement." },
+  { id: "long-legged-doji", family: "candlestick", name: "Long-Legged Doji", longName: "Long-Legged Doji", bullishBias: "neutral", summary: "Large intraday range and balanced close." },
+  { id: "dragonfly-doji", family: "candlestick", name: "Dragonfly Doji", longName: "Dragonfly Doji", bullishBias: "bullish", summary: "Long lower wick suggests rejection of lower prices." },
+  { id: "gravestone-doji", family: "candlestick", name: "Gravestone Doji", longName: "Gravestone Doji", bullishBias: "bearish", summary: "Long upper wick suggests rejection of higher prices." },
+  { id: "spinning-top", family: "candlestick", name: "Spinning Top", longName: "Spinning Top", bullishBias: "neutral", summary: "Indecision candle with a small body." },
+  { id: "marubozu", family: "candlestick", name: "Marubozu", longName: "Marubozu", bullishBias: "neutral", summary: "Strong directional candle with little wick." },
+  { id: "higher-highs-higher-lows", family: "market-structure", name: "HH / HL", longName: "Higher Highs and Higher Lows", bullishBias: "bullish", summary: "Structural uptrend confirmation." },
+  { id: "lower-highs-lower-lows", family: "market-structure", name: "LH / LL", longName: "Lower Highs and Lower Lows", bullishBias: "bearish", summary: "Structural downtrend confirmation." },
+  { id: "bos", family: "market-structure", name: "BOS", longName: "Break of Structure", bullishBias: "neutral", summary: "Price breaks prior swing in trend direction." },
+  { id: "choch", family: "market-structure", name: "CHOCH", longName: "Change of Character", bullishBias: "neutral", summary: "Market behavior shifts before a trend change." },
+  { id: "mss", family: "market-structure", name: "MSS", longName: "Market Structure Shift", bullishBias: "neutral", summary: "Structural break with likely trend rotation." },
+  { id: "support-resistance", family: "market-structure", name: "Support / Resistance", longName: "Support and Resistance", bullishBias: "neutral", summary: "Areas where price repeatedly reacts." },
+  { id: "trendline-break", family: "market-structure", name: "Trendline Break", longName: "Trendline Break", bullishBias: "neutral", summary: "Break of a directional trendline." },
+  { id: "trendline-retest", family: "market-structure", name: "Trendline Retest", longName: "Trendline Retest", bullishBias: "neutral", summary: "Price returns to a broken trendline." },
+  { id: "breakout-and-retest", family: "market-structure", name: "Breakout + Retest", longName: "Breakout and Retest", bullishBias: "neutral", summary: "Break and pullback into the prior level." },
+  { id: "false-breakout", family: "market-structure", name: "False Breakout", longName: "False Breakout", bullishBias: "neutral", summary: "Break fails and price quickly re-enters the range." },
+  { id: "pullback", family: "market-structure", name: "Pullback", longName: "Pullback or Retracement", bullishBias: "neutral", summary: "Temporary move against the main trend." },
+  { id: "range-expansion", family: "market-structure", name: "Range Expansion", longName: "Range Expansion", bullishBias: "neutral", summary: "Volatility expands beyond range limits." },
+  { id: "compression", family: "market-structure", name: "Compression", longName: "Compression", bullishBias: "neutral", summary: "Volatility shrinks before a major move." },
+  { id: "rejection-wick", family: "market-structure", name: "Rejection Wick", longName: "Rejection Wick", bullishBias: "neutral", summary: "Strong wick rejects a key level." },
+  { id: "impulsive-move", family: "market-structure", name: "Impulsive Move", longName: "Impulsive Move and Correction", bullishBias: "neutral", summary: "Sharp directional move followed by a pullback." },
+  { id: "liquidity-sweep", family: "smc", name: "Liquidity Sweep", longName: "Liquidity Sweep", bullishBias: "neutral", summary: "Price sweeps highs or lows before reversing." },
+  { id: "fair-value-gap", family: "smc", name: "FVG", longName: "Fair Value Gap", bullishBias: "neutral", summary: "Three-candle imbalance used for retracement expectations." },
+  { id: "order-block", family: "smc", name: "Order Block", longName: "Order Block", bullishBias: "neutral", summary: "Zone associated with strong directional continuation." },
+  { id: "breaker-block", family: "smc", name: "Breaker Block", longName: "Breaker Block", bullishBias: "neutral", summary: "Block formed after a structural break." },
+  { id: "mitigation-block", family: "smc", name: "Mitigation Block", longName: "Mitigation Block", bullishBias: "neutral", summary: "A prior area that may be revisited." },
+  { id: "premium-discount-equilibrium", family: "smc", name: "Premium / Discount", longName: "Premium, Discount and Equilibrium", bullishBias: "neutral", summary: "Price range segmentation for value analysis." },
+  { id: "buy-side-liquidity", family: "smc", name: "BSL", longName: "Buy-side Liquidity", bullishBias: "bullish", summary: "Liquidity captured above prior highs or ranges." },
+  { id: "sell-side-liquidity", family: "smc", name: "SSL", longName: "Sell-side Liquidity", bullishBias: "bearish", summary: "Liquidity captured below prior lows or ranges." },
+  { id: "equal-highs-lows", family: "smc", name: "EQH / EQL", longName: "Equal highs and equal lows", bullishBias: "neutral", summary: "Zone with repeated equal-price reactions." },
+  { id: "inducement", family: "smc", name: "Inducement", longName: "Inducement", bullishBias: "neutral", summary: "False move used to trap traders before the actual direction." },
+  { id: "displacement", family: "smc", name: "Displacement", longName: "Displacement", bullishBias: "neutral", summary: "Strong directional thrust causing a trend shift." },
+  { id: "liquidity-grab", family: "smc", name: "Liquidity Grab", longName: "Liquidity Grab", bullishBias: "neutral", summary: "Sweep of prior highs/lows before a reversal." },
+  { id: "consequent-encroachment", family: "smc", name: "Consequent Encroachment", longName: "Consequent Encroachment", bullishBias: "neutral", summary: "Gap midpoint or fair-value gap reversion zone." },
+  { id: "optimal-trade-entry", family: "smc", name: "OTE", longName: "Optimal Trade Entry", bullishBias: "neutral", summary: "Fibonacci retracement zone used for execution." },
+  { id: "rejection-block", family: "smc", name: "Rejection Block", longName: "Rejection Block", bullishBias: "neutral", summary: "Zone where price rejected a prior move." },
+  { id: "balanced-price-range", family: "smc", name: "BPR", longName: "Balanced Price Range", bullishBias: "neutral", summary: "Consolidation zone used for range expansion." },
+  { id: "session-liquidity", family: "smc", name: "Session Liquidity", longName: "Session Highs and Lows", bullishBias: "neutral", summary: "Liquidity from session extremes and prior-day ranges." },
+  { id: "asian-range-breakout", family: "combination", name: "Asian Range Breakout", longName: "Asian Range Breakout", bullishBias: "neutral", summary: "Breakout after the Asia session range." },
+  { id: "london-breakout", family: "combination", name: "London Breakout", longName: "London Session Breakout", bullishBias: "neutral", summary: "High-volatility session breakout beyond prior extremes." },
+  { id: "new-york-breakout", family: "combination", name: "New York Breakout", longName: "New York Session Breakout", bullishBias: "neutral", summary: "Momentum from the New York session after London flow." },
+  { id: "momentum-scalping", family: "combination", name: "Momentum Scalping", longName: "Momentum Scalping", bullishBias: "neutral", summary: "Fast trend-following entries after short consolidation." },
+  { id: "divergence-trading", family: "indicator", name: "Divergence", longName: "Divergence Trading", bullishBias: "neutral", summary: "Price and indicator disagree about momentum direction." },
+  { id: "supply-demand", family: "combination", name: "Supply / Demand", longName: "Supply and Demand Zone Trading", bullishBias: "neutral", summary: "Re-entries into previously validated zones." },
+  { id: "fvg-trend-confirmation", family: "combination", name: "FVG + Trend", longName: "FVG retracement with trend confirmation", bullishBias: "neutral", summary: "Fair value gap retest aligned with trend." },
+  { id: "order-block-retest", family: "combination", name: "Order Block Retest", longName: "Order Block retest with BOS confirmation", bullishBias: "neutral", summary: "Retest of a valid block with structure confirmation." },
+  { id: "multi-timeframe-alignment", family: "combination", name: "Multi-Timeframe Alignment", longName: "Multi-Timeframe Trend Alignment", bullishBias: "neutral", summary: "Higher-timeframe directional context supports lower-timeframe entries." },
+  { id: "news-breakout", family: "combination", name: "News Breakout", longName: "News Event Breakout", bullishBias: "neutral", summary: "High-volatility breakout after economic release." },
+  { id: "mean-reversion", family: "combination", name: "Mean Reversion", longName: "Mean Reversion", bullishBias: "neutral", summary: "Price rotates back to the average after expansion." },
+  { id: "elliott-wave", family: "combination", name: "Elliott Wave", longName: "Elliott Wave", bullishBias: "neutral", summary: "Wave-based directional framework for price structure." },
+  { id: "wyckoff", family: "combination", name: "Wyckoff", longName: "Wyckoff Accumulation / Distribution", bullishBias: "neutral", summary: "Accumulation or distribution phases before expansion." },
+  { id: "opening-range-breakout", family: "combination", name: "Opening Range Breakout", longName: "Opening Range Breakout", bullishBias: "neutral", summary: "Break after the market opening range is established." },
+  { id: "volatility-expansion", family: "combination", name: "Volatility Expansion", longName: "Volatility Expansion", bullishBias: "neutral", summary: "Expansion after consolidation or compression." },
+];
+
+export function getPatternById(id: string): PatternDefinition | undefined {
+  return PATTERN_LIBRARY.find((p) => p.id === id);
+}
+
+export function patternSummary(prices: number[]): string[] {
+  if (prices.length < 60) return ["Collecting data for pattern analysis"];
+  const last = prices.at(-1) ?? 0;
+  const prev = prices.at(-2) ?? last;
+  const shortEma = ema(prices, 9);
+  const midEma = ema(prices, 21);
+  const longEma = ema(prices, 50);
+  const swing = prices.slice(-60);
+  const swingHigh = Math.max(...swing);
+  const swingLow = Math.min(...swing);
+  const trendBias = shortEma > midEma && midEma > longEma ? "bullish" : shortEma < midEma && midEma < longEma ? "bearish" : "neutral";
+  const trends: string[] = [];
+  if (trendBias === "bullish") trends.push("Bullish trend structure");
+  if (trendBias === "bearish") trends.push("Bearish trend structure");
+  if (last > swingHigh * 0.997 && last > prev) trends.push("Liquidity test above recent highs");
+  if (last < swingLow * 1.003 && last < prev) trends.push("Liquidity test below recent lows");
+  if (last > prev) trends.push("Short-term upward pressure");
+  if (last < prev) trends.push("Short-term downward pressure");
+  return trends.slice(0, 6);
+}
+
 export function eliteHybridSignal(prices: number[], config: Partial<MultiStrategyConfig> = {}): CompositeSignal {
   const cfg = { ...DEFAULT_MULTI_STRATEGY, ...config };
   if (prices.length < 60) return { side: null, confidence: 0, note: "Collecting 60 ticks for elite hybrid analysis", reasons: [], score: 0 };
