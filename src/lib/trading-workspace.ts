@@ -28,6 +28,8 @@ export type HybridAutopilotConfig = {
   bulkDirection: "signal" | "alternate" | "up" | "down";
 };
 
+export type AutopilotProfilePreset = "conservative" | "balanced" | "aggressive";
+
 export const DEFAULT_HYBRID_AUTOPILOT: HybridAutopilotConfig = {
   name: "Mwase Jaguar Hybrid Bot",
   accountMode: "demo",
@@ -47,6 +49,48 @@ export const DEFAULT_HYBRID_AUTOPILOT: HybridAutopilotConfig = {
   bulkDirection: "signal",
 };
 
+export const AUTOPILOT_PRESETS: Record<AutopilotProfilePreset, HybridAutopilotConfig> = {
+  conservative: {
+    ...DEFAULT_HYBRID_AUTOPILOT,
+    name: "Conservative Recovery Bot",
+    fixedStake: 0.35,
+    maxLoss: 8,
+    profitTarget: 6,
+    maxTrades: 25,
+    maxLosses: 2,
+    minConfidence: 75,
+    cooldownMs: 3500,
+    maxConcurrentOrders: 1,
+    bulkDirection: "signal",
+  },
+  balanced: {
+    ...DEFAULT_HYBRID_AUTOPILOT,
+    name: "Balanced Hybrid Bot",
+    fixedStake: 1,
+    maxLoss: 15,
+    profitTarget: 10,
+    maxTrades: 40,
+    maxLosses: 3,
+    minConfidence: 70,
+    cooldownMs: 2500,
+    maxConcurrentOrders: 1,
+    bulkDirection: "signal",
+  },
+  aggressive: {
+    ...DEFAULT_HYBRID_AUTOPILOT,
+    name: "Aggressive Growth Bot",
+    fixedStake: 2,
+    maxLoss: 20,
+    profitTarget: 14,
+    maxTrades: 60,
+    maxLosses: 4,
+    minConfidence: 65,
+    cooldownMs: 1800,
+    maxConcurrentOrders: 1,
+    bulkDirection: "signal",
+  },
+};
+
 export function normalizeHybridAutopilotConfig(input: Partial<HybridAutopilotConfig> = {}): HybridAutopilotConfig {
   const base = { ...DEFAULT_HYBRID_AUTOPILOT, ...input };
   return {
@@ -62,6 +106,11 @@ export function normalizeHybridAutopilotConfig(input: Partial<HybridAutopilotCon
     cooldownMs: Number.isFinite(base.cooldownMs) && base.cooldownMs >= 0 ? base.cooldownMs : DEFAULT_HYBRID_AUTOPILOT.cooldownMs,
     maxConcurrentOrders: Number.isFinite(base.maxConcurrentOrders) && base.maxConcurrentOrders >= 1 ? base.maxConcurrentOrders : DEFAULT_HYBRID_AUTOPILOT.maxConcurrentOrders,
   };
+}
+
+export function hybridAutopilotPresetSummary(config: Partial<HybridAutopilotConfig>) {
+  const cfg = normalizeHybridAutopilotConfig(config);
+  return `${cfg.name} · stake ${cfg.fixedStake} · min conf ${cfg.minConfidence}% · cooldown ${(cfg.cooldownMs / 1000).toFixed(1)}s · max loss ${cfg.maxLoss} · target ${cfg.profitTarget}`;
 }
 
 export function hybridAutopilotGate(
