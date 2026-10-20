@@ -1,9 +1,10 @@
 import { computeSignal, ema } from "./deriv";
 import { kindSignal, lastDigit, type Kind, type KindSignal } from "./contracts";
 
-export type StrategyId = "hybrid" | "trend-pattern" | "breakout-retest" | "fib-pullback";
+export type StrategyId = "hybrid" | "elite-hybrid" | "trend-pattern" | "breakout-retest" | "fib-pullback";
 export const STRATEGIES: { id: StrategyId; name: string; checks: string[] }[] = [
   { id: "hybrid", name: "Hybrid confluence", checks: ["Contract-specific signal", "Trend and momentum", "Market regime"] },
+  { id: "elite-hybrid", name: "Elite multi-factor hybrid", checks: ["Trend and liquidity alignment", "BOS / CHOCH structure", "Breakout-retest and Fibonacci filter"] },
   { id: "trend-pattern", name: "Trend-Confirmed Pattern", checks: ["EMA 9 / 21 / 50 alignment", "Three strict directional ticks", "Trend agreement"] },
   { id: "breakout-retest", name: "Trendline Breakout-Retest", checks: ["Previous 30-tick range", "Break in the last 10 ticks", "Retest and directional close"] },
   { id: "fib-pullback", name: "Fib Pullback + Support", checks: ["60-tick swing", "38.2–61.8% retracement", "EMA trend and reversal"] },
@@ -113,6 +114,122 @@ export function hybridAutopilotPresetSummary(config: Partial<HybridAutopilotConf
   return `${cfg.name} · stake ${cfg.fixedStake} · min conf ${cfg.minConfidence}% · cooldown ${(cfg.cooldownMs / 1000).toFixed(1)}s · max loss ${cfg.maxLoss} · target ${cfg.profitTarget}`;
 }
 
+export type CompositeSignal = {
+  side: 0 | 1 | null;
+  confidence: number;
+  note: string;
+  reasons: string[];
+  score: number;
+};
+
+export type MultiStrategyConfig = {
+  minBullishScore: number;
+  minBearishScore: number;
+  requiredConfluence: number;
+  trendWeight: number;
+  liquidityWeight: number;
+  breakoutWeight: number;
+  fibWeight: number;
+  structureWeight: number;
+};
+
+export const DEFAULT_MULTI_STRATEGY: MultiStrategyConfig = {
+  minBullishScore: 55,
+  minBearishScore: 55,
+  requiredConfluence: 12,
+  trendWeight: 20,
+  liquidityWeight: 18,
+  breakoutWeight: 20,
+  fibWeight: 16,
+  structureWeight: 14,
+};
+
+export function eliteHybridSignal(prices: number[], config: Partial<MultiStrategyConfig> = {}): CompositeSignal {
+  const cfg = { ...DEFAULT_MULTI_STRATEGY, ...config };
+  if (prices.length < 60) return { side: null, confidence: 0, note: "Collecting 60 ticks for elite hybrid analysis", reasons: [], score: 0 };
+
+  const last = prices.at(-1) ?? 0;
+  const prev = prices.at(-2) ?? last;
+  const shortEma = ema(prices, 9);
+  const midEma = ema(prices, 21);
+  const longEma = ema(prices, 50);
+  const trendBias = shortEma > midEma && midEma > longEma ? 0 : shortEma < midEma && midEma < longEma ? 1 : null;
+
+  let bullishScore = 0;
+  let bearishScore = 0;
+  const reasons: string[] = [];
+
+  if (trendBias === 0) {
+    bullishScore += cfg.trendWeight;
+    reasons.push("Bullish EMA stack");
+  } else if (trendBias === 1) {
+    bearishScore += cfg.trendWeight;
+    reasons.push("Bearish EMA stack");
+  }
+
+  const lastSwing = prices.slice(-60);
+  const swingHigh = Math.max(...lastSwing);
+  const swingLow = Math.min(...lastSwing);
+  const bullishLiquidity = last > swingHigh * 0.997 && last > prev;
+  const bearishLiquidity = last < swingLow * 1.003 && last < prev;
+  if (bullishLiquidity) {
+    bullishScore += cfg.liquidityWeight;
+    reasons.push("Buyer liquidity preserved above prior highs");
+  }
+  if (bearishLiquidity) {
+    bearishScore += cfg.liquidityWeight;
+    reasons.push("Seller liquidity preserved below prior lows");
+  }
+
+  const range = prices.slice(-40);
+  const upper = Math.max(...range.slice(0, -10));
+  const lower = Math.min(...range.slice(0, -10));
+  const breakoutBull = last > upper && prev <= upper;
+  const breakoutBear = last < lower && prev >= lower;
+  if (breakoutBull) {
+    bullishScore += cfg.breakoutWeight;
+    reasons.push("Bullish breakout and range expansion");
+  }
+  if (breakoutBear) {
+    bearishScore += cfg.breakoutWeight;
+    reasons.push("Bearish breakdown and range expansion");
+  }
+
+  const swingRange = swingHigh - swingLow;
+  if (swingRange > 0) {
+    const retraceBull = (swingHigh - last) / swingRange;
+    const retraceBear = (last - swingLow) / swingRange;
+    if (retraceBull >= 0.382 && retraceBull <= 0.618 && last > prev) {
+      bullishScore += cfg.fibWeight;
+      reasons.push("Bullish Fibonacci pullback within 38.2–61.8%");
+    }
+    if (retraceBear >= 0.382 && retraceBear <= 0.618 && last < prev) {
+      bearishScore += cfg.fibWeight;
+      reasons.push("Bearish Fibonacci pullback within 38.2–61.8%");
+    }
+  }
+
+  const structureBull = last > prices.at(-5) && last > Math.max(...prices.slice(-20, -5)) && last > prev;
+  const structureBear = last < prices.at(-5) && last < Math.min(...prices.slice(-20, -5)) && last < prev;
+  if (structureBull) {
+    bullishScore += cfg.structureWeight;
+    reasons.push("Bullish structure with higher highs and higher lows");
+  }
+  if (structureBear) {
+    bearishScore += cfg.structureWeight;
+    reasons.push("Bearish structure with lower highs and lower lows");
+  }
+
+  const bullishConfluence = bullishScore - bearishScore;
+  const bearishConfluence = bearishScore - bullishScore;
+  const side: 0 | 1 | null = bullishScore >= cfg.minBullishScore && bullishConfluence >= cfg.requiredConfluence ? 0 : bearishScore >= cfg.minBearishScore && bearishConfluence >= cfg.requiredConfluence ? 1 : null;
+
+  const confidence = side === 0 ? Math.min(99, 50 + bullishConfluence * 2.2) : side === 1 ? Math.min(99, 50 + bearishConfluence * 2.2) : 0;
+  const note = side === 0 ? "Elite hybrid bullish confluence: trend + structure + breakout + pullback alignment" : side === 1 ? "Elite hybrid bearish confluence: trend + structure + breakdown + pullback alignment" : "Waiting for multi-factor confluence";
+
+  return { side, confidence: Math.round(confidence), note, reasons: reasons.slice(0, 6), score: side === 0 ? bullishScore : side === 1 ? bearishScore : 0 };
+}
+
 export function hybridAutopilotGate(
   signal: KindSignal | null,
   limits: ExecutionLimits,
@@ -152,9 +269,12 @@ export function hybridAutopilotGate(
 export function patternSignal(id: StrategyId, prices: number[]): KindSignal {
   const wait = (note: string): KindSignal => ({ side: null, confidence: 0, note });
   if (prices.length < 60) return wait("Collecting 60 ticks");
-  if (id === "hybrid") {
-    const s = computeSignal(prices);
-    return { side: s.dir === "CALL" ? 0 : s.dir === "PUT" ? 1 : null, confidence: s.confidence, note: s.note };
+  if (id === "hybrid" || id === "elite-hybrid") {
+    const s = id === "elite-hybrid" ? eliteHybridSignal(prices) : computeSignal(prices);
+    const side = typeof s === "object" && "side" in s ? s.side : s.dir === "CALL" ? 0 : s.dir === "PUT" ? 1 : null;
+    const confidence = typeof s === "object" && "confidence" in s ? s.confidence : s.confidence;
+    const note = typeof s === "object" && "note" in s ? s.note : s.note;
+    return { side, confidence, note } as KindSignal;
   }
   const last = prices.at(-1) ?? 0, previous = prices.at(-2) ?? last;
   const e9 = ema(prices, 9), e21 = ema(prices, 21), e50 = ema(prices, 50);
