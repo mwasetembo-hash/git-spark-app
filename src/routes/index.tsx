@@ -10,7 +10,7 @@ import { runsSignal } from "@/lib/runs";
 import { Journal } from "@/components/Journal";
 import { Profiles } from "@/components/Profiles";
 import { TradingWorkspace } from "@/components/TradingWorkspace";
-import { automationBlock, bulkSide, patternSignal, type StrategyId } from "@/lib/trading-workspace";
+import { DEFAULT_HYBRID_AUTOPILOT, automationBlock, bulkSide, normalizeHybridAutopilotConfig, patternSignal, type StrategyId } from "@/lib/trading-workspace";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -68,11 +68,7 @@ function Dashboard() {
   const lastSettle = useRef(0);
   const lastWaitLog = useRef(0);
   const [halted, setHalted] = useState(false);
-  const [maxLoss, setMaxLoss] = useState(20);
-  const [takeProfit, setTakeProfit] = useState(10);
-  const [maxTrades, setMaxTrades] = useState(50);
   const [maxStake, setMaxStake] = useState(10);
-  const [lossStreakStop, setLossStreakStop] = useState(3);
   const [auto, setAuto] = useState(false);
   const [busy, setBusy] = useState(false);
   const orderLock = useRef(false);
@@ -94,6 +90,13 @@ function Dashboard() {
   const curStake = useRef(1);
   const streak = useRef(0);
   const tickSub = useRef<string | null>(null);
+  const [autopilotConfig, setAutopilotConfig] = useState(DEFAULT_HYBRID_AUTOPILOT);
+
+  const updateAutopilot = <K extends keyof typeof DEFAULT_HYBRID_AUTOPILOT>(key: K, value: (typeof DEFAULT_HYBRID_AUTOPILOT)[K]) => {
+    setAutopilotConfig((prev) => normalizeHybridAutopilotConfig({ ...prev, [key]: value }));
+  };
+
+  const hybridConfig = normalizeHybridAutopilotConfig(autopilotConfig);
 
   const addLog = (m: string) => setLog((l) => [`${new Date().toLocaleTimeString()} ${m}`, ...l].slice(0, 80));
   const def = CONTRACTS[kind];
@@ -109,17 +112,20 @@ function Dashboard() {
     } catch {}
   }, []);
 
-  // Digit contracts need ticks
   useEffect(() => {
     if (def.digits) { setUnit("t"); setDuration((d) => Math.min(10, Math.max(1, d))); }
     if (def.ticks) { setUnit("t"); setDuration((d) => Math.min(def.ticks![1], Math.max(def.ticks![0], d))); }
     if (def.single) setMode("SIGNAL");
-  }, [kind]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [kind]);
 
-  const settings = { symbol, kind, mode, stake, duration, unit, digit, offset, hi, lo, minConf, maxLoss, takeProfit, maxTrades, lossStreakStop, sensitivity, cooldown, selectedTick, multiplier, growthRate, tpAmt, slAmt, brainGate, strategy };
+  const settings = {
+    symbol, kind, mode, stake, duration, unit, digit, offset, hi, lo, minConf: hybridConfig.minConfidence, maxLoss: hybridConfig.maxLoss,
+    takeProfit: hybridConfig.profitTarget, maxTrades: hybridConfig.maxTrades, lossStreakStop: hybridConfig.maxLosses, sensitivity, cooldown: hybridConfig.cooldownMs / 1000,
+    selectedTick, multiplier, growthRate, appId, token, accountId,
+  };
   const applySettings = (c: Partial<typeof settings>) => {
     if (orderLock.current || bulkActive.current || auto) return;
-    const set: Record<string, (v: any) => void> = { symbol: setSymbol, kind: setKind, mode: setMode, stake: setStake, duration: setDuration, unit: setUnit, digit: setDigit, offset: setOffset, hi: setHi, lo: setLo, minConf: setMinConf, maxLoss: setMaxLoss, takeProfit: setTakeProfit, maxTrades: setMaxTrades, lossStreakStop: setLossStreakStop, sensitivity: setSensitivity, cooldown: setCooldown, selectedTick: setSelectedTick, multiplier: setMultiplier, growthRate: setGrowthRate, tpAmt: setTpAmt, slAmt: setSlAmt, brainGate: setBrainGate, strategy: setStrategy };
+    const set: Record<string, (v: any) => void> = { symbol: setSymbol, kind: setKind, mode: setMode, stake: setStake, duration: setDuration, unit: setUnit, digit: setDigit, offset: setOffset, hi: setHi, lo: setLo, minConf: setMinConf, maxLoss: (v) => updateAutopilot("maxLoss", Number(v)), takeProfit: (v) => updateAutopilot("profitTarget", Number(v)), maxTrades: (v) => updateAutopilot("maxTrades", Number(v)), lossStreakStop: (v) => updateAutopilot("maxLosses", Number(v)), sensitivity: setSensitivity, cooldown: (v) => updateAutopilot("cooldownMs", Number(v) * 1000), selectedTick: setSelectedTick, multiplier: setMultiplier, growthRate: setGrowthRate, appId: setAppId, token: setToken, accountId: setAccountId };
     for (const [k, v] of Object.entries(c)) if (set[k] && v !== undefined) set[k]!(v);
   };
 
@@ -136,8 +142,22 @@ function Dashboard() {
   const ctAvailable = (t: string) => !available || available.has(t);
   const base = computeSignal(prices);
   const stats = def.digits ? digitStats(prices, decimals) : null;
-  const executionBlocked = automationBlock({ connected: status === "on", demo: !!account?.isVirtual, halted, net, maxLoss, target: takeProfit, trades: trades.length, maxTrades, losses: streak.current, maxLosses: lossStreakStop, unresolved: trades.some((t) => t.profit === null) });
+  const executionBlocked = automationBlock({
+    connected: status === "on",
+    demo: !!account?.isVirtual,
+    halted,
+    net,
+    maxLoss: hybridConfig.maxLoss,
+    target: hybridConfig.profitTarget,
+    trades: trades.length,
+    maxTrades: hybridConfig.maxTrades,
+    losses: streak.current,
+    maxLosses: hybridConfig.maxLosses,
+    unresolved: trades.some((t) => t.profit === null),
+  });
+
   useEffect(() => { const timer = setInterval(() => setClock((n) => n + 1), 1000); return () => clearInterval(timer); }, []);
+
   const stopBulk = () => { bulkActive.current = false; setBulkRunning(false); addLog("Bulk session stopped — purchased orders remain open until settlement"); };
   const startBulk = () => {
     const errs = preflight(bulkDirection === "down" ? 1 : 0, stake);
@@ -176,7 +196,7 @@ function Dashboard() {
         const s = await c.send({ active_symbols: "brief" });
         const live = (s.active_symbols as any[]).map((x) => {
           const sym = x.underlying_symbol ?? x.symbol;
-          return { symbol: sym, name: x.underlying_symbol_name ?? x.display_name ?? sym, group: groupOf(sym, String(x.market ?? "")), open: !!(x.exchange_is_open ?? true), pip: Number(x.pip ?? x.pip_size) || undefined };
+          return { symbol: sym, name: x.underlying_symbol_name ?? x.display_name ?? sym, group: groupOf(sym, String(x.market ?? "")), open: !!(x.exchange_is_open ?? true), pip: Number(x.pip ?? x.tick_size ?? 0.01) };
         });
         if (live.length) setInstruments(live);
       } catch (e: any) { addLog(`Symbols list error: ${e.message} — using built-in list`); }
@@ -232,7 +252,6 @@ function Dashboard() {
     addLog(`Scan done: ${rows.length} instruments ranked`);
   };
 
-  // Pre-trade checks: every problem is reported before any order is sent.
   const preflight = (side: 0 | 1, amount: number): string[] => {
     const errs: string[] = [];
     if (!Number.isFinite(amount)) errs.push("Stake must be a finite number");
@@ -292,12 +311,10 @@ function Dashboard() {
       }
     };
     try {
-      // Throttle: keep at least 1.2s between order requests
       const g = globalThis as any;
       const gap = Date.now() - (g.__lastOrderAt ?? 0);
       if (gap < 1200) await sleep(1200 - gap);
       g.__lastOrderAt = Date.now();
-      // Quote first; never resubmit an ambiguous purchase as a second direct buy.
       const p = await withBackoff(() => c.send(req));
       const q = p?.proposal;
       if (!q?.id) throw new Error(`No valid quote for ${ct} on ${symbol}`);
@@ -308,7 +325,7 @@ function Dashboard() {
       let b: any;
       try { b = await c.send({ buy: q.id, price }); }
       catch (e) {
-        if (/timed out|connection closed/i.test(String(e))) { setHalted(true); stopRef.current = true; setAuto(false); bulkActive.current = false; setBulkRunning(false); addLog("Purchase confirmation uncertain — reconcile Deriv transactions before releasing emergency stop"); }
+        if (/timed out|connection closed/i.test(String(e))) { setHalted(true); stopRef.current = true; setAuto(false); bulkActive.current = false; setBulkRunning(false); addLog("Purchase confirmation timeout — automation halted"); }
         throw e;
       }
       const id = Number(b?.buy?.contract_id);
@@ -321,9 +338,8 @@ function Dashboard() {
         const check = (poc: any) => { if (poc && Number(poc.contract_id) === id && (poc.is_sold || poc.status === "won" || poc.status === "lost")) finish(Number(poc.profit ?? 0)); };
         const off = c.on("proposal_open_contract", (m) => check(m.proposal_open_contract));
         c.send({ proposal_open_contract: 1, contract_id: id, subscribe: 1 }).then((m) => check(m?.proposal_open_contract)).catch(() => {});
-        // Poll every 3s in case the live stream drops; never leave the bot stuck.
         const poll = setInterval(() => { c.send({ proposal_open_contract: 1, contract_id: id }).then((m) => check(m?.proposal_open_contract)).catch(() => {}); }, 3000);
-        const cap = setTimeout(() => { addLog(`#${id} settlement unconfirmed — trading stopped; check Deriv transactions`); setHalted(true); stopRef.current = true; setAuto(false); bulkActive.current = false; setBulkRunning(false); finish(null); }, def.open ? 30 * 60_000 : Math.max(180_000, (unit === "m" ? duration * 60_000 : unit === "s" ? duration * 1000 : duration * 2000) + 60_000));
+        const cap = setTimeout(() => { addLog(`#${id} settlement unconfirmed — trading stopped; check Deriv transactions`); setHalted(true); stopRef.current = true; setAuto(false); bulkActive.current = false; setBulkRunning(false); finish(null); }, 45000);
       });
       lastSettle.current = Date.now();
       if (result === null) return null;
@@ -336,7 +352,7 @@ function Dashboard() {
       setError(e.message);
       return null;
     } finally { orderLock.current = false; setBusy(false); }
-  }, [account, duration, unit, symbol, def, digit, offset, hi, lo, selectedTick, multiplier, growthRate, tpAmt, slAmt, available, status, prices.length, halted, maxStake, balance, trades, bulkRunning]);
+  }, [account, duration, unit, symbol, def, digit, offset, hi, lo, selectedTick, multiplier, growthRate, tpAmt, slAmt, available, status, prices.length, halted, maxStake, balance, trades, bulkRunning, bulkActive, stopRef]);
 
   useEffect(() => {
     if (!bulkRunning || !bulkActive.current || busy || orderLock.current) return;
@@ -355,31 +371,31 @@ function Dashboard() {
   useEffect(() => {
     if (!auto || busy || status !== "on") return;
     if (executionBlocked) { setAuto(false); addLog(`Stopped: ${executionBlocked}`); return; }
-    if (net <= -maxLoss) { setAuto(false); addLog("Stopped: loss limit reached"); return; }
-    if (net >= takeProfit) { setAuto(false); addLog("Stopped: profit target reached"); return; }
-    if (trades.length >= maxTrades) { setAuto(false); addLog("Stopped: max trades reached"); return; }
-    if (streak.current >= lossStreakStop) { setAuto(false); addLog(`Stopped: ${streak.current} losses in a row`); return; }
+    if (net <= -hybridConfig.maxLoss) { setAuto(false); addLog("Stopped: loss limit reached"); return; }
+    if (net >= hybridConfig.profitTarget) { setAuto(false); addLog("Stopped: profit target reached"); return; }
+    if (trades.length >= hybridConfig.maxTrades) { setAuto(false); addLog("Stopped: max trades reached"); return; }
+    if (streak.current >= hybridConfig.maxLosses) { setAuto(false); addLog(`Stopped: ${streak.current} losses in a row`); return; }
     if (!account?.isVirtual) { setAuto(false); addLog("Stopped: autopilot runs on DEMO accounts only"); return; }
-    if (Date.now() - lastSettle.current < cooldown * 1000) return;
+    if (Date.now() - lastSettle.current < hybridConfig.cooldownMs) return;
     const wait = (why: string) => { if (Date.now() - lastWaitLog.current > 15000) { lastWaitLog.current = Date.now(); addLog(`Waiting: ${why}`); } };
     if (sig.side === null) return wait(sig.note);
-    if (sig.confidence < minConf) return wait(`confidence ${sig.confidence}% below your minimum ${minConf}%`);
+    if (sig.confidence < hybridConfig.minConfidence) return wait(`confidence ${sig.confidence}% below your minimum ${hybridConfig.minConfidence}%`);
     if (brainGate && (!brain || brain.side !== sig.side)) return wait("AI Brain does not agree yet");
     if (mode === "SIDE_A" && sig.side !== 0) return wait(`signal is ${def.sides[1]}, you chose ${def.sides[0]} only`);
     if (mode === "SIDE_B" && sig.side !== 1) return wait(`signal is ${def.sides[0]}, you chose ${def.sides[1]} only`);
     const amt = curStake.current;
     placeTrade(sig.side, amt).then((r) => {
       if (r == null) return;
-      curStake.current = Math.min(stake, maxStake); // fixed stake — no martingale
+      curStake.current = Math.min(stake, maxStake);
     });
-  }, [auto, busy, prices.length, clock, executionBlocked]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [auto, busy, prices.length, clock, executionBlocked, hybridConfig, account, net, trades.length, sig, brainGate, brain, mode, def, placeTrade, stake, maxStake]);
 
   const startAuto = () => {
     if (bulkActive.current || orderLock.current) { setError("Stop bulk trading and wait for settlement first"); return; }
     if (executionBlocked) { setError(executionBlocked); return; }
     if (halted) { setError("Emergency stop is ON — release it first."); return; }
     if (!account?.isVirtual) { setError("Autopilot is locked to DEMO accounts. Switch to your demo (VRTC) account to run it."); return; }
-    curStake.current = stake;
+    curStake.current = hybridConfig.fixedStake;
     setAuto(true);
     addLog(`Autopilot ON (${def.label})`);
   };
@@ -415,7 +431,7 @@ function Dashboard() {
       </header>
 
       <main className="mx-auto grid max-w-7xl gap-4 p-4 lg:grid-cols-3">
-        <TradingWorkspace prices={prices} decimals={decimals} symbol={symbol} kind={kind} digit={digit} setDigit={setDigit} strategy={strategy} setStrategy={setStrategy} signal={sig} stake={stake} ticks={duration} minConf={minConf} sensitivity={sensitivity} connected={status === "on"} demo={!!account?.isVirtual} busy={busy} blocked={auto ? "Stop autopilot before starting bulk trading" : executionBlocked} bulkRunning={bulkRunning} bulkCompleted={bulkCompleted} bulkCount={bulkCount} setBulkCount={setBulkCount} bulkDirection={bulkDirection} setBulkDirection={setBulkDirection} startBulk={startBulk} stopBulk={stopBulk} />
+        <TradingWorkspace prices={prices} decimals={decimals} symbol={symbol} kind={kind} digit={digit} setDigit={setDigit} strategy={strategy} setStrategy={setStrategy} signal={sig} stake={stake} ticks={ticksEq} minConf={minConf} sensitivity={sensitivity} connected={status === "on"} demo={!!account?.isVirtual} busy={busy} blocked={executionBlocked} bulkRunning={bulkRunning} bulkCompleted={bulkCompleted} bulkCount={bulkCount} setBulkCount={setBulkCount} bulkDirection={bulkDirection} setBulkDirection={setBulkDirection} startBulk={startBulk} stopBulk={stopBulk} />
         <section className="space-y-3 glass rounded-2xl p-4">
           <h2 className="font-semibold">Deriv connection</h2>
           <label className="block text-xs text-muted-foreground">App ID
@@ -443,7 +459,7 @@ function Dashboard() {
             ["Balance", balance != null ? `${balance.toFixed(2)} ${account?.currency ?? ""}` : "—"],
             ["Session P/L", net.toFixed(2)],
             ["Win rate", settled.length ? `${Math.round((wins / settled.length) * 100)}%` : "—"],
-            ["Trades", `${trades.length}/${maxTrades}`],
+            ["Trades", `${trades.length}/${hybridConfig.maxTrades}`],
           ].map(([k, v]) => (
             <div key={k} className="glass rounded-2xl p-4">
               <div className="text-xs text-muted-foreground">{k}</div>
@@ -471,11 +487,11 @@ function Dashboard() {
             <div className="chart-3d"><svg viewBox="0 0 400 100" preserveAspectRatio="none" className="h-48 w-full">
               <defs><linearGradient id="fillg" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="var(--up)" stopOpacity="0.35" /><stop offset="100%" stopColor="var(--up)" stopOpacity="0" /></linearGradient></defs>
               {pts && <polygon points={`0,100 ${pts} ${(view.length - 1) * 4},100`} fill="url(#fillg)" />}
-              {def.barrier === "offset" && last != null && <line x1="0" x2="400" y1={100 - ((last + offset - min) / (max - min || 1)) * 100} y2={100 - ((last + offset - min) / (max - min || 1)) * 100} stroke="var(--primary)" strokeDasharray="4 3" strokeWidth="0.8" />}
-              {def.barrier === "range" && last != null && [hi, lo].map((b) => { const y = 100 - ((last + b - min) / (max - min || 1)) * 100; return <line key={b} x1="0" x2="400" y1={y} y2={y} stroke="var(--primary)" strokeDasharray="4 3" strokeWidth="0.8" />; })}
+              {def.barrier === "offset" && last != null && <line x1="0" x2="400" y1={100 - ((last + offset - min) / (max - min || 1)) * 100} y2={100 - ((last + offset - min) / (max - min || 1)) * 100} stroke="var(--muted-foreground)" strokeDasharray="4 4" />}
+              {def.barrier === "range" && last != null && [hi, lo].map((b) => { const y = 100 - ((last + b - min) / (max - min || 1)) * 100; return <line key={b} x1="0" x2="400" y1={y} y2={y} stroke="var(--muted-foreground)" strokeDasharray="4 4" />; })}
               <polyline points={pts} fill="none" stroke="var(--up)" strokeWidth="1.5" />
             </svg></div>
-            {available && <p className="mt-1 text-xs text-muted-foreground">On this market: {def.types.filter((t, i) => !(def.single && i)).map((t) => <span key={t} className={ctAvailable(t) ? "text-up" : "text-down"}>{t} {ctAvailable(t) ? "✓" : "✗ not offered"} </span>)}</p>}
+            {available && <p className="mt-1 text-xs text-muted-foreground">On this market: {def.types.filter((t, i) => !(def.single && i)).map((t) => <span key={t} className={ctAvailable(t) ? "text-up" : "text-down"}>{t} </span>)}</p>}
             {runs && (
               <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
                 {runs.parts.map((p) => (
@@ -545,7 +561,7 @@ function Dashboard() {
                 </select>
               </label>
             </div>}
-            {def.extra === "selected_tick" && num(selectedTick, (n) => setSelectedTick(Math.max(1, Math.min(5, Math.round(n)))), "Predicted tick (1-5)")}
+            {def.extra === "selected_tick" && num(selectedTick, (n) => setSelectedTick(Math.max(1, Math.min(5, Math.round(n)))), "Predicted tick (1-5)" )}
             {def.extra === "multiplier" && num(multiplier, setMultiplier, "Multiplier (e.g. 100)")}
             {def.extra === "growth_rate" && (
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">Growth rate
@@ -557,27 +573,31 @@ function Dashboard() {
             {def.open && num(tpAmt, setTpAmt, "Take profit (amount)", 0.1)}
             {def.extra === "multiplier" && num(slAmt, setSlAmt, "Stop loss (amount)", 0.1)}
             {kind === "RUNS" && (
-              <label className="col-span-2 flex flex-col gap-1 text-xs text-muted-foreground">Sensitivity: {["", "Very careful", "Careful", "Balanced", "Sensitive", "Very sensitive"][sensitivity]}
-                <input type="range" min={1} max={5} value={sensitivity} onChange={(e) => setSensitivity(Number(e.target.value))} />
-              </label>
+              <label className="col-span-2 flex flex-col gap-1 text-xs text-muted-foreground">Sensitivity: {["", "Very careful", "Careful", "Balanced", "Sensitive", "Very sensitive"][sensitivity]}<input type="range" min={1} max={5} value={sensitivity} onChange={(e) => setSensitivity(Number(e.target.value))} /></label>
             )}
             {def.barrier === "digit" && num(digit, (n) => setDigit(Math.max(0, Math.min(9, Math.round(n)))), "Prediction digit (0-9)")}
             {def.barrier === "offset" && num(offset, setOffset, "Barrier offset (+/-)", 0.01)}
             {def.barrier === "range" && <>{num(hi, setHi, "High barrier offset (+)", 0.01)}{num(lo, setLo, "Low barrier offset (-)", 0.01)}</>}
-            {num(minConf, setMinConf, "Min confidence %")}
-            {num(cooldown, setCooldown, "Pause after trade (sec)")}
-            {num(maxStake, setMaxStake, "Max stake cap", 0.1)}
-            {num(lossStreakStop, setLossStreakStop, "Stop after N losses")}
-            {num(maxLoss, setMaxLoss, "Loss limit")}
-            {num(takeProfit, setTakeProfit, "Profit target")}
-            {num(maxTrades, setMaxTrades, "Max trades")}
+            {num(hybridConfig.fixedStake, (n) => updateAutopilot("fixedStake", Number(n)), "Autopilot fixed stake", 0.1)}
+            {num(hybridConfig.minConfidence, (n) => updateAutopilot("minConfidence", Number(n)), "Min confidence %")}
+            {num(hybridConfig.cooldownMs / 1000, (n) => updateAutopilot("cooldownMs", Number(n) * 1000), "Pause after trade (sec)")}
+            {num(hybridConfig.maxLosses, (n) => updateAutopilot("maxLosses", Number(n)), "Stop after N losses")}
+            {num(hybridConfig.maxLoss, (n) => updateAutopilot("maxLoss", Number(n)), "Loss limit")}
+            {num(hybridConfig.profitTarget, (n) => updateAutopilot("profitTarget", Number(n)), "Profit target")}
+            {num(hybridConfig.maxTrades, (n) => updateAutopilot("maxTrades", Number(n)), "Max trades")}
+            {num(hybridConfig.maxConcurrentOrders, (n) => updateAutopilot("maxConcurrentOrders", Number(n)), "Max concurrent orders")}
+          </div>
+          <div className="space-y-2 rounded-md border border-border bg-background/20 p-2 text-xs">
+            <label className="flex items-center justify-between gap-2"><span>Quote lock before buy</span><input type="checkbox" checked={hybridConfig.requireQuoteLock} onChange={(e) => updateAutopilot("requireQuoteLock", e.target.checked)} /></label>
+            <label className="flex items-center justify-between gap-2"><span>Require settlement confirmation</span><input type="checkbox" checked={hybridConfig.requireSettlementConfirmation} onChange={(e) => updateAutopilot("requireSettlementConfirmation", e.target.checked)} /></label>
+            <label className="flex items-center justify-between gap-2"><span>Stop on unresolved trade</span><input type="checkbox" checked={hybridConfig.stopOnUnresolved} onChange={(e) => updateAutopilot("stopOnUnresolved", e.target.checked)} /></label>
           </div>
           {auto ? (
             <button onClick={() => { setAuto(false); addLog("Autopilot OFF"); }} className="w-full rounded-md bg-down py-3 font-bold text-primary-foreground">STOP AUTOPILOT</button>
           ) : (
             <button disabled={status !== "on"} onClick={startAuto} className="w-full rounded-md bg-up py-3 font-bold text-primary-foreground disabled:opacity-40">START AUTOPILOT</button>
           )}
-          <p className="text-xs text-muted-foreground">No strategy guarantees profit. Autopilot runs on demo accounts only, uses a fixed stake (no martingale), pauses after each trade, and stops at your loss limit, profit target, trade cap or loss streak.</p>
+          <p className="text-xs text-muted-foreground">No strategy guarantees profit. Autopilot runs on demo accounts only, uses a fixed stake (no martingale), pauses after each trade, and stops automatically when risk limits are hit.</p>
         </section>
 
         <section className="glass rounded-2xl p-4 lg:col-span-2">
@@ -590,7 +610,7 @@ function Dashboard() {
           {status !== "on" && <p className="text-xs text-muted-foreground">Connect to rank all {instruments.length} instruments by trend strength and signal confidence.</p>}
           <div className="max-h-80 overflow-auto">
             <table className="w-full font-mono text-xs">
-              <thead className="text-muted-foreground"><tr><th className="text-left">#</th><th className="text-left">Instrument</th><th className="text-left">Group</th><th>Trend</th><th>Conf</th><th>Bias</th><th /></tr></thead>
+              <thead className="text-muted-foreground"><tr><th className="text-left">#</th><th className="text-left">Instrument</th><th className="text-left">Group</th><th>Trend</th><th>Conf</th><th>Dir</th><th>Open</th></tr></thead>
               <tbody>
                 {scan.map((r, i) => (
                   <tr key={r.symbol} className="border-t border-border">
@@ -617,20 +637,20 @@ function Dashboard() {
               ["Entry", last != null ? `Market @ ${last.toFixed(decimals)}` : "—"],
               ["Stake / max loss", `${stake} (fixed)`],
               ["Duration", def.open ? `Until TP ${tpAmt}${def.extra === "multiplier" ? ` / SL ${slAmt}` : ""}` : `${duration}${unit}`],
-              ["Confidence", `${sig.confidence}% (min ${minConf}%)`],
+              ["Confidence", `${sig.confidence}% (min ${hybridConfig.minConfidence}%)`],
               ["Regime", base.parts.find((p) => p.name === "Market regime")?.detail ?? "—"],
               ["Reason", sig.note],
             ];
-            const ready = sig.side !== null && sig.confidence >= minConf && checks.length === 0;
+            const ready = sig.side !== null && sig.confidence >= hybridConfig.minConfidence && checks.length === 0;
             return (
               <>
-                <div className="space-y-0.5 font-mono text-xs">{rows.map(([k, v]) => <div key={k} className="flex justify-between gap-2"><span className="text-muted-foreground">{k}</span><span className="text-right">{v}</span></div>)}</div>
-                <div className={`rounded-md px-2 py-1 text-xs font-semibold ${ready ? "bg-up/20 text-up" : "bg-down/20 text-down"}`}>{ready ? "APPROVED — ready to execute" : "REJECTED — " + (checks[0] ?? (sig.side === null ? "no setup" : "confidence too low"))}</div>
+                <div className="space-y-0.5 font-mono text-xs">{rows.map(([k, v]) => <div key={k} className="flex justify-between gap-2"><span className="text-muted-foreground">{k}</span><span className="text-right text-foreground">{v}</span></div>)}</div>
+                <div className={`rounded-md px-2 py-1 text-xs font-semibold ${ready ? "bg-up/20 text-up" : "bg-down/20 text-down"}`}>{ready ? "APPROVED — ready to execute" : "REJECTED — " + checks[0]}</div>
                 {checks.length > 1 && <ul className="list-disc pl-4 text-xs text-down">{checks.slice(1).map((c) => <li key={c}>{c}</li>)}</ul>}
               </>
             );
           })()}
-          <button onClick={() => { const h = !halted; stopRef.current = h; setHalted(h); if (h) { setAuto(false); bulkActive.current = false; setBulkRunning(false); } addLog(h ? "EMERGENCY STOP engaged" : "Emergency stop released"); }} className={`w-full rounded-md py-2 text-sm font-bold ${halted ? "bg-primary text-primary-foreground" : "bg-down text-primary-foreground"}`}>{halted ? "Release emergency stop" : "EMERGENCY STOP"}</button>
+          <button onClick={() => { const h = !halted; stopRef.current = h; setHalted(h); if (h) { setAuto(false); bulkActive.current = false; setBulkRunning(false); } addLog(h ? "EMERGENCY STOP engaged" : "Emergency stop released"); }} className="w-full rounded-md bg-primary py-2 font-semibold text-primary-foreground">{halted ? "RELEASE EMERGENCY STOP" : "EMERGENCY STOP"}</button>
         </section>
         <Profiles settings={settings} onApply={applySettings} onLog={addLog} />
         <Journal trades={trades} />
