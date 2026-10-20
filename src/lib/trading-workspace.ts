@@ -9,6 +9,96 @@ export const STRATEGIES: { id: StrategyId; name: string; checks: string[] }[] = 
   { id: "fib-pullback", name: "Fib Pullback + Support", checks: ["60-tick swing", "38.2–61.8% retracement", "EMA trend and reversal"] },
 ];
 
+export type HybridAutopilotConfig = {
+  name: string;
+  accountMode: "demo" | "real";
+  fixedStake: number;
+  maxLoss: number;
+  profitTarget: number;
+  maxTrades: number;
+  maxLosses: number;
+  minConfidence: number;
+  minHistoricalTicks: number;
+  sensitivity: number;
+  cooldownMs: number;
+  maxConcurrentOrders: number;
+  requireQuoteLock: boolean;
+  requireSettlementConfirmation: boolean;
+  stopOnUnresolved: boolean;
+  bulkDirection: "signal" | "alternate" | "up" | "down";
+};
+
+export const DEFAULT_HYBRID_AUTOPILOT: HybridAutopilotConfig = {
+  name: "Mwase Jaguar Hybrid Bot",
+  accountMode: "demo",
+  fixedStake: 1,
+  maxLoss: 20,
+  profitTarget: 10,
+  maxTrades: 50,
+  maxLosses: 3,
+  minConfidence: 70,
+  minHistoricalTicks: 60,
+  sensitivity: 3,
+  cooldownMs: 2000,
+  maxConcurrentOrders: 1,
+  requireQuoteLock: true,
+  requireSettlementConfirmation: true,
+  stopOnUnresolved: true,
+  bulkDirection: "signal",
+};
+
+export function normalizeHybridAutopilotConfig(input: Partial<HybridAutopilotConfig> = {}): HybridAutopilotConfig {
+  const base = { ...DEFAULT_HYBRID_AUTOPILOT, ...input };
+  return {
+    ...base,
+    fixedStake: Number.isFinite(base.fixedStake) && base.fixedStake > 0 ? base.fixedStake : DEFAULT_HYBRID_AUTOPILOT.fixedStake,
+    maxLoss: Number.isFinite(base.maxLoss) && base.maxLoss > 0 ? base.maxLoss : DEFAULT_HYBRID_AUTOPILOT.maxLoss,
+    profitTarget: Number.isFinite(base.profitTarget) && base.profitTarget > 0 ? base.profitTarget : DEFAULT_HYBRID_AUTOPILOT.profitTarget,
+    maxTrades: Number.isFinite(base.maxTrades) && base.maxTrades > 0 ? base.maxTrades : DEFAULT_HYBRID_AUTOPILOT.maxTrades,
+    maxLosses: Number.isFinite(base.maxLosses) && base.maxLosses > 0 ? base.maxLosses : DEFAULT_HYBRID_AUTOPILOT.maxLosses,
+    minConfidence: Number.isFinite(base.minConfidence) && base.minConfidence >= 0 ? base.minConfidence : DEFAULT_HYBRID_AUTOPILOT.minConfidence,
+    minHistoricalTicks: Number.isFinite(base.minHistoricalTicks) && base.minHistoricalTicks > 0 ? base.minHistoricalTicks : DEFAULT_HYBRID_AUTOPILOT.minHistoricalTicks,
+    sensitivity: Number.isFinite(base.sensitivity) && base.sensitivity >= 1 ? base.sensitivity : DEFAULT_HYBRID_AUTOPILOT.sensitivity,
+    cooldownMs: Number.isFinite(base.cooldownMs) && base.cooldownMs >= 0 ? base.cooldownMs : DEFAULT_HYBRID_AUTOPILOT.cooldownMs,
+    maxConcurrentOrders: Number.isFinite(base.maxConcurrentOrders) && base.maxConcurrentOrders >= 1 ? base.maxConcurrentOrders : DEFAULT_HYBRID_AUTOPILOT.maxConcurrentOrders,
+  };
+}
+
+export function hybridAutopilotGate(
+  signal: KindSignal | null,
+  limits: ExecutionLimits,
+  config: Partial<HybridAutopilotConfig> = {},
+  context: { quoteLocked?: boolean; settlementResolved?: boolean; pendingOrders?: number } = {},
+): { allow: boolean; side: 0 | 1 | null; reasons: string[]; config: HybridAutopilotConfig } {
+  const normalized = normalizeHybridAutopilotConfig(config);
+  const reasons: string[] = [];
+  const side = signal?.side ?? null;
+
+  if (!limits.connected) reasons.push("Connect to Deriv");
+  if (!limits.demo) reasons.push("Automated orders require a demo account");
+  if (limits.halted) reasons.push("Emergency stop is engaged");
+  if (limits.unresolved) reasons.push("An order is still open or awaiting confirmation");
+  if (context.quoteLocked === false) reasons.push("Quote lock missing before execution");
+  if (context.settlementResolved === false) reasons.push("Settlement confirmation required before next order");
+  if (typeof context.pendingOrders === "number" && context.pendingOrders >= normalized.maxConcurrentOrders) reasons.push("Maximum concurrent orders reached");
+  if (side === null) reasons.push("No valid signal side available");
+  if (signal && signal.confidence < normalized.minConfidence) reasons.push(`Signal confidence below ${normalized.minConfidence}%`);
+  if (limits.net <= -normalized.maxLoss) reasons.push("Session loss limit reached");
+  if (limits.net >= normalized.profitTarget) reasons.push("Session profit target reached");
+  if (limits.trades >= normalized.maxTrades) reasons.push("Maximum trades reached");
+  if (limits.losses >= normalized.maxLosses) reasons.push("Consecutive loss limit reached");
+  if (normalized.requireQuoteLock && context.quoteLocked === false) reasons.push("Quote-first safety gate blocked execution");
+  if (normalized.requireSettlementConfirmation && context.settlementResolved === false) reasons.push("Settlement-gated execution blocked the next order");
+  if (normalized.stopOnUnresolved && limits.unresolved) reasons.push("Autopilot stopped because unresolved exposure remains");
+
+  return {
+    allow: reasons.length === 0,
+    side,
+    reasons,
+    config: normalized,
+  };
+}
+
 /** Transparent local implementations; not proprietary algorithms from reference sites. */
 export function patternSignal(id: StrategyId, prices: number[]): KindSignal {
   const wait = (note: string): KindSignal => ({ side: null, confidence: 0, note });
@@ -47,7 +137,7 @@ export function patternSignal(id: StrategyId, prices: number[]): KindSignal {
   return wait("Waiting for a 38.2–61.8% pullback and rejection");
 }
 
-export type ExecutionLimits = { connected: boolean; demo: boolean; halted: boolean; net: number; maxLoss: number; target: number; trades: number; maxTrades: number; losses: number; maxLosses: number; unresolved: boolean };
+export type ExecutionLimits = { connected: boolean; demo: boolean; halted: boolean; net: number; maxLoss: number; target: number; trades: number; maxTrades: number; losses: number; maxLosses: number; unresolved: boolean; };
 export function automationBlock(s: ExecutionLimits): string | null {
   if (!s.connected) return "Connect to Deriv";
   if (!s.demo) return "Automated orders require a demo account";
