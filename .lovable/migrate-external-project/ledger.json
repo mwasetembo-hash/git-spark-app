@@ -1,0 +1,9 @@
+[
+  {"capability":"Reference feature integration","source":"three public GitHub repositories","outcome":"adapt","status":"in_progress","next_action":"Adapt contract checks, scanner and terminal; do not replace the existing working app wholesale."},
+  {"capability":"Deriv connection and orders","source":"existing app and official new Deriv API","outcome":"preserve","status":"verification_pending","next_action":"Verify public metadata and quotes; user must replace exposed PAT to verify authenticated orders."},
+  {"capability":"Account identities and trading records","source":"Deriv accounts","outcome":"preserve_external_provider","status":"preserved","next_action":"Retain account ownership and transaction history at Deriv; no application user export was detected."},
+  {"capability":"AI providers","source":"existing Brain panel","outcome":"preserve","status":"unchanged","next_action":"No new AI credentials provided; avoid claims of verified AI swarm execution."},
+  {"capability":"Database/auth migration","source":"source inspection","outcome":"not_applicable","status":"inspected","next_action":"No application database or user authentication service detected."},
+  {"capability":"Digitpilot strategies","source":"digitpilot.site","outcome":"pending","status":"blocked","next_action":"Public fetch unavailable; need accessible export or screenshots to reproduce undisclosed tools."},
+  {"capability":"Dependency advisories","source":"root package.json and bun.lock","outcome":"inspect","status":"pending","next_action":"Audit actual resolved dependencies; no pnpm lockfile or seven-advisory report exists in this workspace."}
+]
