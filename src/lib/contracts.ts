@@ -19,7 +19,7 @@ export type ContractDef = {
 export const CONTRACTS: Record<Kind, ContractDef> = {
   RUNS: { label: "Only Ups / Only Downs", sides: ["▲ Only Ups", "▼ Only Downs"], types: ["RUNHIGH", "RUNLOW"], barrier: "none", digits: false, ticks: [2, 5] },
   RISE_FALL: { label: "Rise / Fall", sides: ["▲ Rise", "▼ Fall"], types: ["CALL", "PUT"], barrier: "none", digits: false },
-  HIGHER_LOWER: { label: "Higher / Lower", sides: ["▲ Higher", "▼ Lower"], types: ["CALL", "PUT"], barrier: "offset", digits: false },
+  HIGHER_LOWER: { label: "Higher / Lower", sides: ["▲ Higher", "▼ Lower"], types: ["HIGHER", "LOWER"], barrier: "offset", digits: false },
   TOUCH: { label: "Touch / No Touch", sides: ["Touch", "No Touch"], types: ["ONETOUCH", "NOTOUCH"], barrier: "offset", digits: false },
   OVER_UNDER: { label: "Digits Over / Under", sides: ["Over", "Under"], types: ["DIGITOVER", "DIGITUNDER"], barrier: "digit", digits: true },
   MATCH_DIFF: { label: "Digits Matches / Differs", sides: ["Matches", "Differs"], types: ["DIGITMATCH", "DIGITDIFF"], barrier: "digit", digits: true },
