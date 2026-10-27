@@ -31,7 +31,7 @@ export const Route = createFileRoute("/")({
 
 type Mode = "SIDE_A" | "SIDE_B" | "SIGNAL";
 type Trade = { id: number; label: string; stake: number; profit: number | null; symbol: string; time: string };
-type ScanRow = { symbol: string; name: string; group: string; trend: number; conf: number; dir: string };
+type ScanRow = { symbol: string; name: string; group: string; trend: number; conf: number; dir: string; active: number };
 type Unit = "t" | "s" | "m";
 
 const LS = "mwase-deriv-config";
@@ -39,6 +39,8 @@ const GROUPS = ["Forex", "Gold & Metals", "Commodities", "Stock Indices", "Crypt
 
 function Dashboard() {
   const client = useRef<DerivClient | null>(null);
+  const publicClient = useRef<DerivClient | null>(null);
+  const [feedConnected, setFeedConnected] = useState(false);
   const [appId, setAppId] = useState("");
   const [token, setToken] = useState("");
   const [status, setStatus] = useState<"off" | "connecting" | "on">("off");
@@ -91,6 +93,7 @@ function Dashboard() {
   const [log, setLog] = useState<string[]>([]);
   const [scan, setScan] = useState<ScanRow[]>([]);
   const [scanning, setScanning] = useState(false);
+  const [followScanner, setFollowScanner] = useState(false);
   const [brain, setBrain] = useState<BrainVerdict | null>(null);
   const [brainGate, setBrainGate] = useState(false);
   const curStake = useRef(1);
@@ -131,8 +134,8 @@ function Dashboard() {
   };
   const applySettings = (c: Partial<typeof settings>) => {
     if (orderLock.current || bulkActive.current || auto) return;
-    const set: Record<string, (v: any) => void> = { symbol: setSymbol, kind: setKind, mode: setMode, stake: setStake, duration: setDuration, unit: setUnit, digit: setDigit, offset: setOffset, hi: setHi, lo: setLo, minConf: setMinConf, maxLoss: (v) => updateAutopilot("maxLoss", Number(v)), takeProfit: (v) => updateAutopilot("profitTarget", Number(v)), maxTrades: (v) => updateAutopilot("maxTrades", Number(v)), lossStreakStop: (v) => updateAutopilot("maxLosses", Number(v)), sensitivity: setSensitivity, cooldown: (v) => updateAutopilot("cooldownMs", Number(v) * 1000), selectedTick: setSelectedTick, multiplier: setMultiplier, growthRate: setGrowthRate, appId: setAppId, token: setToken, accountId: setAccountId };
-    for (const [k, v] of Object.entries(c)) if (set[k] && v !== undefined) set[k]!(v);
+    const set: Record<string, (v: any) => void> = { symbol: setSymbol, kind: setKind, mode: setMode, stake: setStake, duration: setDuration, unit: setUnit, digit: setDigit, offset: setOffset, hi: setHi, lo: setLo, minConf: (v) => updateAutopilot("minConfidence", Number(v)), maxLoss: (v) => updateAutopilot("maxLoss", Number(v)), takeProfit: (v) => updateAutopilot("profitTarget", Number(v)), maxTrades: (v) => updateAutopilot("maxTrades", Number(v)), lossStreakStop: (v) => updateAutopilot("maxLosses", Number(v)), sensitivity: setSensitivity, cooldown: (v) => updateAutopilot("cooldownMs", Number(v) * 1000), selectedTick: setSelectedTick, multiplier: setMultiplier, growthRate: setGrowthRate, autoBarrier: setAutoBarrier, strategy: setStrategy };
+    for (const [k, v] of Object.entries(c)) { const setter = set[k]; if (setter && v !== undefined) setter(v); }
   };
 
   const net = trades.reduce((s, t) => s + (t.profit ?? 0), 0);
@@ -220,8 +223,24 @@ function Dashboard() {
   symbolRef.current = symbol;
 
   useEffect(() => {
-    const c = client.current;
-    if (status !== "on" || !c) return;
+    let disposed = false;
+    const c = new DerivClient(); publicClient.current = c;
+    c.onClose = () => { if (!disposed) setFeedConnected(false); };
+    c.on("tick", (m) => { if (m.tick?.symbol === symbolRef.current) setPrices((p) => [...p, Number(m.tick.quote)].slice(-500)); });
+    c.connect("wss://api.derivws.com/trading/v1/options/ws/public").then(async () => {
+      if (disposed) return;
+      setFeedConnected(true);
+      const result = await c.send({ active_symbols: "brief" });
+      if (disposed) return;
+      const live = (result.active_symbols ?? []).map((x: any) => ({ symbol: x.underlying_symbol ?? x.symbol, name: x.underlying_symbol_name ?? x.display_name ?? x.symbol, group: groupOf(x.underlying_symbol ?? x.symbol, String(x.market ?? "")), pip: Number(x.pip ?? x.pip_size ?? x.tick_size) || 0.01, open: x.exchange_is_open !== 0 }));
+      if (live.length) setInstruments(live);
+    }).catch(() => { if (!disposed) addLog("Public market feed unavailable — connect your account to retry"); });
+    return () => { disposed = true; c.close(); };
+  }, []);
+
+  useEffect(() => {
+    const c = status === "on" ? client.current : publicClient.current;
+    if ((!feedConnected && status !== "on") || !c) return;
     (async () => {
       if (tickSub.current) await c.send({ forget: tickSub.current }).catch(() => {});
       tickSub.current = null;
@@ -241,10 +260,10 @@ function Dashboard() {
         setAvailable(list.length ? new Set(list.map((x) => String(x.contract_type))) : null);
       } catch { setAvailable(null); }
     })();
-  }, [symbol, status]);
+  }, [symbol, status, feedConnected]);
 
   const runScan = async () => {
-    const c = client.current;
+    const c = status === "on" ? client.current : publicClient.current;
     if (!c) return;
     setScanning(true);
     const rows: ScanRow[] = [];
@@ -253,14 +272,34 @@ function Dashboard() {
       try {
         const h = await c.send({ ticks_history: i.symbol, count: 200, end: "latest", style: "ticks" });
         const p = (h.history.prices as number[]).map(Number);
-        const s = computeSignal(p);
-        rows.push({ symbol: i.symbol, name: i.name, group: i.group, trend: trendStrength(p), conf: s.confidence, dir: s.dir === "CALL" ? "UP" : s.dir === "PUT" ? "DOWN" : "—" });
+        const precision = i.pip ? Math.max(0, Math.round(-Math.log10(i.pip))) : 2;
+        const cf = await c.send({ contracts_for: i.symbol });
+        const contracts = (cf.contracts_for?.available ?? []) as ContractSpec[];
+        const hSignal = analyzeHybrid(p);
+        const signals = (Object.keys(CONTRACTS) as Kind[]).map((k) => {
+          const d = CONTRACTS[k];
+          const signal = kindSignal(k, p, precision, { digit, offset, hi, lo, ticks: ticksEq, sensitivity });
+          const supported = signal.side !== null && contractSpecErrors(contracts, { kind: k, side: signal.side, duration, unit, digit, offset, hi, lo, decimals: precision }).length === 0;
+          return { k, signal, supported };
+        });
+        const current = signals.find((s) => s.k === kind);
+        const s = current?.supported ? current.signal : { side: null, confidence: 0 };
+        const confirmed = s.side !== null && (CONTRACTS[kind].digits || CONTRACTS[kind].single || hSignal.side === s.side);
+        rows.push({ symbol: i.symbol, name: i.name, group: i.group, trend: trendStrength(p), conf: confirmed ? s.confidence : 0, dir: confirmed ? s.side === 0 ? "UP" : "DOWN" : "WAIT", active: signals.filter((s) => s.supported).length });
         setScan([...rows].sort((a, b) => b.conf + b.trend - (a.conf + a.trend)));
       } catch {}
     }
     setScanning(false);
     addLog(`Scan done: ${rows.length} instruments ranked`);
   };
+
+  useEffect(() => {
+    if (!followScanner || !auto || busy || scanning || orderLock.current) return;
+    const best = scan.find((r) => r.conf >= hybridConfig.minConfidence && r.dir !== "WAIT");
+    if (best && best.symbol !== symbol) { setSymbol(best.symbol); addLog(`Scanner selected ${best.name}; fresh contract checks required`); }
+  }, [followScanner, auto, busy, scanning, scan, symbol, hybridConfig.minConfidence]);
+
+  useEffect(() => { if (!followScanner || !feedConnected) return; const timer = setInterval(() => { if (!scanning && !orderLock.current) runScan(); }, 60_000); return () => clearInterval(timer); }, [followScanner, feedConnected, scanning, kind, duration, unit]);
 
   const preflight = (side: 0 | 1, amount: number): string[] => {
     const errs: string[] = [];
@@ -449,7 +488,7 @@ function Dashboard() {
 
       <main className="mx-auto grid max-w-7xl gap-4 p-4 lg:grid-cols-3">
         <HybridEnginePanel analysis={hybrid} gates={[...(status === "on" ? [] : ["Connect to Deriv"]), ...hybrid.blockers, ...(!account?.isVirtual && account ? hybridTradeBlock(hybrid, { side: sig.side ?? 0, confidence: hybridConfig.minConfidence, balance, stake, maxRiskPercent: 0.5 }) : []), ...(halted ? ["Emergency stop is ON"] : [])]} />
-        <TradingWorkspace prices={prices} decimals={decimals} symbol={symbol} kind={kind} digit={digit} setDigit={setDigit} strategy={strategy} setStrategy={setStrategy} signal={sig} stake={stake} ticks={ticksEq} minConf={minConf} sensitivity={sensitivity} connected={status === "on"} demo={!!account?.isVirtual} busy={busy} blocked={executionBlocked} bulkRunning={bulkRunning} bulkCompleted={bulkCompleted} bulkCount={bulkCount} setBulkCount={setBulkCount} bulkDirection={bulkDirection} setBulkDirection={setBulkDirection} startBulk={startBulk} stopBulk={stopBulk} />
+        <TradingWorkspace prices={prices} decimals={decimals} symbol={symbol} kind={kind} digit={digit} setDigit={setDigit} strategy={strategy} setStrategy={setStrategy} signal={sig} stake={stake} ticks={ticksEq} minConf={minConf} sensitivity={sensitivity} connected={feedConnected || status === "on"} demo={!!account?.isVirtual} busy={busy} blocked={executionBlocked} bulkRunning={bulkRunning} bulkCompleted={bulkCompleted} bulkCount={bulkCount} setBulkCount={setBulkCount} bulkDirection={bulkDirection} setBulkDirection={setBulkDirection} startBulk={startBulk} stopBulk={stopBulk} />
         <section className="space-y-3 glass rounded-2xl p-4">
           <h2 className="font-semibold">Deriv connection</h2>
           <label className="block text-xs text-muted-foreground">App ID
