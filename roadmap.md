@@ -9,3 +9,5 @@
 - [ ] Inspect the three new GitHub repositories and digitpilot.site for reusable public features and the claimed dependency findings.
 - [ ] Replace the dashboard presentation with a scannable terminal showing signals across contracts and instruments.
 - [ ] Configure Deriv credentials securely; never store the pasted access token in source files or report its value.
+- [ ] Handle Lower quotes with no return without submitting a losing/no-return contract.
+- [ ] Add price-action, trend, breakout, mean-reversion and volatility confluence with risk gates before live trades.

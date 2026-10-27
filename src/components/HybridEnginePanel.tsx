@@ -1,0 +1,11 @@
+import { ShieldCheck, Activity } from "lucide-react";
+import type { HybridAnalysis } from "@/lib/hybrid-engine";
+
+export function HybridEnginePanel({ analysis, gates }: { analysis: HybridAnalysis; gates: string[] }) {
+  return <section aria-label="Hybrid engine" className="border-y border-border py-5 lg:col-span-3">
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 className="flex items-center gap-2 text-xl font-semibold"><Activity className="size-5 text-primary" />Hybrid strategy engine</h2><span className="font-mono text-xs text-muted-foreground">{analysis.regime.toUpperCase()} · {analysis.agreement}/5 AGREEMENT · SCORE {analysis.confidence}%</span></div>
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{analysis.votes.length ? analysis.votes.map((v) => <article key={v.name} className="rounded-lg border border-border bg-card p-3"><h3 className="text-sm font-semibold">{v.name}</h3><div className={`my-2 font-mono text-lg ${v.side === 0 ? "text-up" : v.side === 1 ? "text-down" : "text-muted-foreground"}`}>{v.side === null ? "WAIT" : v.side === 0 ? "UP" : "DOWN"}</div><p className="text-xs text-muted-foreground">{v.reason}</p></article>) : ["Price action", "Trend", "Breakout", "Mean reversion", "Volatility"].map((name) => <article key={name} className="rounded-lg border border-border bg-card p-3"><h3 className="text-sm font-semibold">{name}</h3><p className="mt-2 text-xs text-muted-foreground">Waiting for 100 market ticks</p></article>)}</div>
+    <div className="mt-4 flex items-start gap-2 text-xs"><ShieldCheck className={`size-4 shrink-0 ${gates.length ? "text-down" : "text-up"}`} /><div><span className="font-semibold">Pre-trade gates</span><p className={`mt-1 ${gates.length ? "text-down" : "text-up"}`}>{gates.length ? [...new Set(gates)].join(" · ") : "Analysis and risk checks passed; a positive-return Deriv quote is still required."}</p></div></div>
+    <p className="mt-3 text-xs text-muted-foreground">Tick-based indicators. Scores measure agreement, not win probability. Live orders require hybrid confirmation and a 0.5% balance risk cap.</p>
+  </section>;
+}
