@@ -352,8 +352,9 @@ export function eliteHybridSignal(prices: number[], config: Partial<MultiStrateg
     }
   }
 
-  const structureBull = last > prices.at(-5) && last > Math.max(...prices.slice(-20, -5)) && last > prev;
-  const structureBear = last < prices.at(-5) && last < Math.min(...prices.slice(-20, -5)) && last < prev;
+  const fifth = prices.at(-5) ?? last;
+  const structureBull = last > fifth && last > Math.max(...prices.slice(-20, -5)) && last > prev;
+  const structureBear = last < fifth && last < Math.min(...prices.slice(-20, -5)) && last < prev;
   if (structureBull) {
     bullishScore += cfg.structureWeight;
     reasons.push("Bullish structure with higher highs and higher lows");
@@ -415,9 +416,7 @@ export function patternSignal(id: StrategyId, prices: number[]): KindSignal {
   if (id === "hybrid" || id === "elite-hybrid") {
     const s = id === "elite-hybrid" ? eliteHybridSignal(prices) : computeSignal(prices);
     const side = typeof s === "object" && "side" in s ? s.side : s.dir === "CALL" ? 0 : s.dir === "PUT" ? 1 : null;
-    const confidence = typeof s === "object" && "confidence" in s ? s.confidence : s.confidence;
-    const note = typeof s === "object" && "note" in s ? s.note : s.note;
-    return { side, confidence, note } as KindSignal;
+    return { side, confidence: s.confidence, note: s.note };
   }
   const last = prices.at(-1) ?? 0, previous = prices.at(-2) ?? last;
   const e9 = ema(prices, 9), e21 = ema(prices, 21), e50 = ema(prices, 50);

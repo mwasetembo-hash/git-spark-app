@@ -365,7 +365,7 @@ function Dashboard() {
       addLog(`${result > 0 ? "WIN" : "LOSS"} #${id}: ${result.toFixed(2)}`);
       return result;
     } catch (e: any) {
-      if (/offers no return/i.test(String(e.message))) { setAuto(false); bulkActive.current = false; setBulkRunning(false); setError(`${ct}: barrier ${req.barrier ?? "—"} at ${duration}${unit} has no priced return. Enable directional barriers for Higher + / Lower −, or change duration; no order was submitted.`); addLog(`${ct}: no-return quote blocked before purchase`); return null; }
+      if (/offers no return/i.test(String(e.message))) { setAuto(false); bulkActive.current = false; setBulkRunning(false); setError(`${ct}: barrier ${req['barrier'] ?? "—"} at ${duration}${unit} has no priced return. Enable directional barriers for Higher + / Lower −, or change duration; no order was submitted.`); addLog(`${ct}: no-return quote blocked before purchase`); return null; }
       addLog(`Order error: ${e.message}`);
       setError(e.message);
       return null;

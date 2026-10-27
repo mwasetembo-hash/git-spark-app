@@ -28,7 +28,7 @@ async function derivRest(path: string, appId: string, token: string, method = "G
   if (!res.ok) {
     const msg = body?.errors?.[0]?.message || (typeof body === "string" ? body : "");
     if (res.status === 401) throw new Error(`Deriv rejected the App ID or token (401). ${msg}`.trim());
-    if (res.status === 403) throw new Error(`Token is missing the "trade" scope (403). ${msg}`.trim());
+    if (res.status === 403) throw new Error(`Deriv denied access (403). Check application permissions and token trade scope. ${msg}`.trim());
     throw new Error(`Deriv error ${res.status}. ${msg}`.trim());
   }
   return body;
@@ -61,10 +61,9 @@ export class DerivClient {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url);
       this.ws = ws;
-      const label = url.split("?")[0];
       const timer = setTimeout(() => {
         ws.close();
-        reject(new Error(`Timed out connecting to ${label}`));
+        reject(new Error("Timed out opening the Deriv trading connection. Reconnect to request a fresh connection."));
       }, 15000);
       ws.onopen = () => {
         clearTimeout(timer);
@@ -73,7 +72,7 @@ export class DerivClient {
       };
       ws.onerror = () => {
         clearTimeout(timer);
-        reject(new Error(`Could not open the Deriv trading connection (${label}). An ad-blocker or firewall may be blocking it.`));
+        reject(new Error("Could not open the Deriv trading connection. Reconnect for a fresh connection; check network or ad-blocker settings."));
       };
       ws.onclose = () => {
         if (this.pingTimer) clearInterval(this.pingTimer);
@@ -89,7 +88,7 @@ export class DerivClient {
           if (!p) return;
           clearTimeout(p.timer);
           this.pending.delete(id);
-          msg.error ? p.reject(new Error(msg.error.message)) : p.resolve(msg);
+          msg.error ? p.reject(Object.assign(new Error(msg.error.message), { code: msg.error.code })) : p.resolve(msg);
         }
         const set = this.subs.get(msg.msg_type);
         if (set && !msg.error) set.forEach((h) => h(msg));
