@@ -173,12 +173,12 @@
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
 
-html, body { background: #02030d; }
+html, body { background: var(--background); }
 @utility glass {
-  background: color-mix(in oklch, var(--card) 38%, transparent);
+  background: var(--card);
   backdrop-filter: blur(6px) saturate(130%);
   border: 1px solid color-mix(in oklch, var(--primary) 22%, transparent);
-  box-shadow: 0 10px 40px -10px oklch(0.5 0.2 260 / 0.45), inset 0 1px 0 oklch(1 0 0 / 0.06);
+  box-shadow: none;
 }
 @utility text-glow { text-shadow: 0 0 18px color-mix(in oklch, var(--primary) 70%, transparent); }
 
@@ -189,9 +189,15 @@ html, body { background: #02030d; }
 .digit-distribution { min-height: 190px; }
 @media (max-width: 640px) {
   main input, main select { max-width: 100%; min-width: 0; }
+  main label, main .flex-1 { min-width: 0; }
+  main label > input, main label > select { width: 100%; }
+  main .grid-cols-2 > .flex { grid-column: 1 / -1; }
   main section, main section > div { min-width: 0; }
   .workspace-band { padding-top: .5rem; }
 }
+main .rounded-2xl { border-radius: var(--radius-md); }
+.digit-distribution > button { height: 190px; }
+.digit-distribution > button > svg { flex: none; }
 @media (prefers-reduced-motion: reduce) {
   .chart-3d > svg { transition: none; }
 }

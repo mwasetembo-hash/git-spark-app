@@ -4,7 +4,10 @@ import { DerivClient, computeSignal, fetchAccounts, fetchOtpUrl, type DerivAccou
 import { CATALOG, CONTRACTS, digitStats, groupOf, kindSignal, trendStrength, type Inst, type Kind } from "@/lib/contracts";
 import { DiagnosePanel } from "@/components/DiagnosePanel";
 import { BrainPanel } from "@/components/BrainPanel";
-import { CosmicBackground } from "@/components/CosmicBackground";
+import { HybridEnginePanel } from "@/components/HybridEnginePanel";
+import { Button } from "@/components/ui/button";
+import { analyzeHybrid, directionalOffset, hybridTradeBlock, quoteReturnError } from "@/lib/hybrid-engine";
+import { contractSpecErrors, formatBarrier, type ContractSpec } from "@/lib/contract-specs";
 import type { BrainVerdict } from "@/lib/brain-providers";
 import { runsSignal } from "@/lib/runs";
 import { Journal } from "@/components/Journal";
@@ -54,6 +57,9 @@ function Dashboard() {
   const [unit, setUnit] = useState<Unit>("t");
   const [digit, setDigit] = useState(5);
   const [offset, setOffset] = useState(0.5);
+  const [autoBarrier, setAutoBarrier] = useState(false);
+  const [specs, setSpecs] = useState<ContractSpec[] | null>(null);
+  const [specSymbol, setSpecSymbol] = useState("");
   const [hi, setHi] = useState(0.5);
   const [lo, setLo] = useState(-0.5);
   const [minConf, setMinConf] = useState(60);
@@ -121,7 +127,7 @@ function Dashboard() {
   const settings = {
     symbol, kind, mode, stake, duration, unit, digit, offset, hi, lo, minConf: hybridConfig.minConfidence, maxLoss: hybridConfig.maxLoss,
     takeProfit: hybridConfig.profitTarget, maxTrades: hybridConfig.maxTrades, lossStreakStop: hybridConfig.maxLosses, sensitivity, cooldown: hybridConfig.cooldownMs / 1000,
-    selectedTick, multiplier, growthRate, appId, token, accountId,
+    selectedTick, multiplier, growthRate, autoBarrier, strategy,
   };
   const applySettings = (c: Partial<typeof settings>) => {
     if (orderLock.current || bulkActive.current || auto) return;
@@ -134,8 +140,9 @@ function Dashboard() {
   const wins = settled.filter((t) => (t.profit ?? 0) > 0).length;
   const ticksEq = unit === "t" ? duration : unit === "s" ? duration / 2 : duration * 30;
   const contractSignal = kindSignal(kind, prices, decimals, { digit, offset, hi, lo, ticks: ticksEq, sensitivity });
+  const hybrid = analyzeHybrid(prices);
   const pattern = patternSignal(strategy, prices);
-  const sig = strategy === "hybrid" ? contractSignal : pattern.side !== null && pattern.side === contractSignal.side
+  const sig = strategy === "hybrid" ? (def.digits || def.single ? contractSignal : hybrid.side !== null && hybrid.side === contractSignal.side ? { ...contractSignal, confidence: Math.min(contractSignal.confidence, hybrid.confidence), note: `${contractSignal.note} · ${hybrid.note}` } : { side: null, confidence: 0, note: hybrid.note }) : pattern.side !== null && pattern.side === contractSignal.side
     ? { ...contractSignal, confidence: Math.min(contractSignal.confidence, pattern.confidence), note: `${contractSignal.note} · ${pattern.note}` }
     : { side: null, confidence: 0, note: `Pattern filter: ${pattern.note}` };
   const runs = kind === "RUNS" ? runsSignal(prices, duration, sensitivity) : null;
@@ -218,6 +225,7 @@ function Dashboard() {
     (async () => {
       if (tickSub.current) await c.send({ forget: tickSub.current }).catch(() => {});
       tickSub.current = null;
+      setSpecs(null); setSpecSymbol(""); setAvailable(null);
       setPrices([]);
       try {
         const h = await c.send({ ticks_history: symbol, count: 500, end: "latest", style: "ticks" });
@@ -228,6 +236,8 @@ function Dashboard() {
       try {
         const cf = await c.send({ contracts_for: symbol });
         const list = (cf.contracts_for?.available ?? []) as any[];
+        if (symbolRef.current !== symbol) return;
+        setSpecs(list); setSpecSymbol(symbol);
         setAvailable(list.length ? new Set(list.map((x) => String(x.contract_type))) : null);
       } catch { setAvailable(null); }
     })();
@@ -254,6 +264,7 @@ function Dashboard() {
 
   const preflight = (side: 0 | 1, amount: number): string[] => {
     const errs: string[] = [];
+    errs.push(...contractSpecErrors(specSymbol === symbol ? specs : null, { kind, side, duration, unit, digit, offset: directionalOffset(offset, side, kind === "HIGHER_LOWER" && autoBarrier), hi, lo, decimals }));
     if (!Number.isFinite(amount)) errs.push("Stake must be a finite number");
     if (status !== "on" || !client.current) errs.push("Not connected to Deriv");
     if (!account) errs.push("No account selected");
@@ -272,6 +283,11 @@ function Dashboard() {
     if (halted) errs.push("Emergency stop is ON");
     if (available && !available.has(def.types[side])) errs.push(`${def.types[side]} is not available on ${symbol}`);
     if (trades.some((t) => t.profit === null)) errs.push("Wait for the open order to settle");
+    if (net <= -hybridConfig.maxLoss) errs.push("Session loss limit reached");
+    if (net >= hybridConfig.profitTarget) errs.push("Session profit target reached");
+    if (trades.length >= hybridConfig.maxTrades) errs.push("Maximum trades reached");
+    if (streak.current >= hybridConfig.maxLosses) errs.push("Consecutive loss limit reached");
+    if (account && !account.isVirtual) errs.push(...hybridTradeBlock(hybrid, { side, confidence: hybridConfig.minConfidence, balance, stake: amount, maxRiskPercent: 0.5 }));
     return errs;
   };
 
@@ -293,9 +309,9 @@ function Dashboard() {
     if (def.extra === "selected_tick") req["selected_tick"] = selectedTick;
     if (def.extra === "multiplier") { req["multiplier"] = multiplier; req["limit_order"] = { take_profit: tpAmt, stop_loss: slAmt }; }
     if (def.extra === "growth_rate") { req["growth_rate"] = growthRate; req["limit_order"] = { take_profit: tpAmt }; }
-    const sgn = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+    const sgn = (n: number) => formatBarrier(n, decimals);
     if (def.barrier === "digit") req["barrier"] = String(digit);
-    if (def.barrier === "offset") req["barrier"] = sgn(offset);
+    if (def.barrier === "offset") req["barrier"] = sgn(directionalOffset(offset, side, kind === "HIGHER_LOWER" && autoBarrier));
     if (def.barrier === "range") { req["barrier"] = sgn(hi); req["barrier2"] = sgn(lo); }
     const label = `${def.sides[side]}${def.barrier === "digit" ? ` ${digit}` : ""}`;
     const isRate = (e: any) => /rate limit|RateLimit/i.test(String(e?.message ?? e?.code ?? e));
@@ -318,6 +334,7 @@ function Dashboard() {
       const p = await withBackoff(() => c.send(req));
       const q = p?.proposal;
       if (!q?.id) throw new Error(`No valid quote for ${ct} on ${symbol}`);
+      if (!def.open) { const returnError = quoteReturnError(q); if (returnError) throw new Error(returnError); }
       const price = Number(q.ask_price);
       if (!Number.isFinite(price) || price <= 0 || price > amount || price > maxStake || (balance != null && price > balance)) throw new Error("Quote exceeds the fixed stake or balance");
       if (stopRef.current || (bulkRunning && !bulkActive.current) || status !== "on") throw new Error("Order cancelled before purchase");
@@ -339,7 +356,7 @@ function Dashboard() {
         const off = c.on("proposal_open_contract", (m) => check(m.proposal_open_contract));
         c.send({ proposal_open_contract: 1, contract_id: id, subscribe: 1 }).then((m) => check(m?.proposal_open_contract)).catch(() => {});
         const poll = setInterval(() => { c.send({ proposal_open_contract: 1, contract_id: id }).then((m) => check(m?.proposal_open_contract)).catch(() => {}); }, 3000);
-        const cap = setTimeout(() => { addLog(`#${id} settlement unconfirmed — trading stopped; check Deriv transactions`); setHalted(true); stopRef.current = true; setAuto(false); bulkActive.current = false; setBulkRunning(false); finish(null); }, 45000);
+        const cap = setTimeout(() => { addLog(`#${id} settlement unconfirmed — trading stopped; check Deriv transactions`); setHalted(true); stopRef.current = true; setAuto(false); bulkActive.current = false; setBulkRunning(false); finish(null); }, def.open ? 30 * 60_000 : Math.max(180_000, (unit === "m" ? duration * 60_000 : unit === "s" ? duration * 1000 : duration * 2000) + 60_000));
       });
       lastSettle.current = Date.now();
       if (result === null) return null;
@@ -348,11 +365,12 @@ function Dashboard() {
       addLog(`${result > 0 ? "WIN" : "LOSS"} #${id}: ${result.toFixed(2)}`);
       return result;
     } catch (e: any) {
+      if (/offers no return/i.test(String(e.message))) { setAuto(false); bulkActive.current = false; setBulkRunning(false); setError(`${ct}: barrier ${req.barrier ?? "—"} at ${duration}${unit} has no priced return. Enable directional barriers for Higher + / Lower −, or change duration; no order was submitted.`); addLog(`${ct}: no-return quote blocked before purchase`); return null; }
       addLog(`Order error: ${e.message}`);
       setError(e.message);
       return null;
     } finally { orderLock.current = false; setBusy(false); }
-  }, [account, duration, unit, symbol, def, digit, offset, hi, lo, selectedTick, multiplier, growthRate, tpAmt, slAmt, available, status, prices.length, halted, maxStake, balance, trades, bulkRunning, bulkActive, stopRef]);
+  }, [account, duration, unit, symbol, kind, def, digit, offset, autoBarrier, hi, lo, selectedTick, multiplier, growthRate, tpAmt, slAmt, available, specs, specSymbol, status, prices, halted, maxStake, balance, trades, bulkRunning, hybridConfig]);
 
   useEffect(() => {
     if (!bulkRunning || !bulkActive.current || busy || orderLock.current) return;
@@ -415,7 +433,6 @@ function Dashboard() {
 
   return (
     <div className="relative isolate min-h-screen font-sans text-foreground">
-      <CosmicBackground />
       <header className="glass sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <h1 className="text-glow text-xl font-bold tracking-tight">MWASE <span className="text-primary">DERIV HYBRID</span></h1>
         <div className="hidden flex-1 justify-center gap-4 font-mono text-xs md:flex">
@@ -431,6 +448,7 @@ function Dashboard() {
       </header>
 
       <main className="mx-auto grid max-w-7xl gap-4 p-4 lg:grid-cols-3">
+        <HybridEnginePanel analysis={hybrid} gates={[...(status === "on" ? [] : ["Connect to Deriv"]), ...hybrid.blockers, ...(!account?.isVirtual && account ? hybridTradeBlock(hybrid, { side: sig.side ?? 0, confidence: hybridConfig.minConfidence, balance, stake, maxRiskPercent: 0.5 }) : []), ...(halted ? ["Emergency stop is ON"] : [])]} />
         <TradingWorkspace prices={prices} decimals={decimals} symbol={symbol} kind={kind} digit={digit} setDigit={setDigit} strategy={strategy} setStrategy={setStrategy} signal={sig} stake={stake} ticks={ticksEq} minConf={minConf} sensitivity={sensitivity} connected={status === "on"} demo={!!account?.isVirtual} busy={busy} blocked={executionBlocked} bulkRunning={bulkRunning} bulkCompleted={bulkCompleted} bulkCount={bulkCount} setBulkCount={setBulkCount} bulkDirection={bulkDirection} setBulkDirection={setBulkDirection} startBulk={startBulk} stopBulk={stopBulk} />
         <section className="space-y-3 glass rounded-2xl p-4">
           <h2 className="font-semibold">Deriv connection</h2>
@@ -469,7 +487,7 @@ function Dashboard() {
 
           <div className="col-span-2 glass rounded-2xl p-4 lg:col-span-4">
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className={field}>
+              <select aria-label="Trading instrument" disabled={busy || auto || bulkRunning} value={symbol} onChange={(e) => setSymbol(e.target.value)} className={field}>
                 {GROUPS.map((g) => {
                   const items = instruments.filter((i) => i.group === g);
                   return items.length ? (
@@ -479,7 +497,7 @@ function Dashboard() {
                   ) : null;
                 })}
               </select>
-              <select value={kind} onChange={(e) => setKind(e.target.value as Kind)} className={field}>
+              <select aria-label="Trading contract" disabled={busy || auto || bulkRunning} value={kind} onChange={(e) => setKind(e.target.value as Kind)} className={field}>
                 {(Object.keys(CONTRACTS) as Kind[]).map((k) => <option key={k} value={k}>{CONTRACTS[k].label}</option>)}
               </select>
               <span className="ml-auto font-mono text-lg">{last?.toFixed(decimals) ?? "—"}</span>
@@ -538,6 +556,7 @@ function Dashboard() {
                 <button disabled={status !== "on" || busy} onClick={() => placeTrade(0, stake)} className="rounded-md bg-up px-5 py-3 font-bold text-primary-foreground disabled:opacity-40">{def.sides[0]}</button>
                 <button hidden={!!def.single} disabled={status !== "on" || busy} onClick={() => placeTrade(1, stake)} className="rounded-md bg-down px-5 py-3 font-bold text-primary-foreground disabled:opacity-40">{def.sides[1]}</button>
               </div>
+              <Button disabled={status !== "on" || busy || sig.side === null} onClick={() => { if (sig.side !== null) placeTrade(sig.side, stake); }}>Execute signal</Button>
             </div>
           </div>
         </section>
@@ -576,7 +595,9 @@ function Dashboard() {
               <label className="col-span-2 flex flex-col gap-1 text-xs text-muted-foreground">Sensitivity: {["", "Very careful", "Careful", "Balanced", "Sensitive", "Very sensitive"][sensitivity]}<input type="range" min={1} max={5} value={sensitivity} onChange={(e) => setSensitivity(Number(e.target.value))} /></label>
             )}
             {def.barrier === "digit" && num(digit, (n) => setDigit(Math.max(0, Math.min(9, Math.round(n)))), "Prediction digit (0-9)")}
-            {def.barrier === "offset" && num(offset, setOffset, "Barrier offset (+/-)", 0.01)}
+            {def.barrier === "offset" && num(offset, setOffset, "Barrier offset (+/-)", 10 ** -decimals)}
+            {kind === "HIGHER_LOWER" && <label className="col-span-2 flex items-center gap-2 text-xs"><input type="checkbox" checked={autoBarrier} disabled={busy || bulkRunning || auto} onChange={(e) => setAutoBarrier(e.target.checked)} />Directional barriers: Higher + / Lower − (same magnitude)</label>}
+            {kind === "HIGHER_LOWER" && <p className="col-span-2 text-xs text-muted-foreground">Higher {formatBarrier(directionalOffset(offset, 0, autoBarrier), decimals) ?? "invalid"} · Lower {formatBarrier(directionalOffset(offset, 1, autoBarrier), decimals) ?? "invalid"} · quoted payout must exceed stake.</p>}
             {def.barrier === "range" && <>{num(hi, setHi, "High barrier offset (+)", 0.01)}{num(lo, setLo, "Low barrier offset (-)", 0.01)}</>}
             {num(hybridConfig.fixedStake, (n) => updateAutopilot("fixedStake", Number(n)), "Autopilot fixed stake", 0.1)}
             {num(hybridConfig.minConfidence, (n) => updateAutopilot("minConfidence", Number(n)), "Min confidence %")}
@@ -645,7 +666,7 @@ function Dashboard() {
             return (
               <>
                 <div className="space-y-0.5 font-mono text-xs">{rows.map(([k, v]) => <div key={k} className="flex justify-between gap-2"><span className="text-muted-foreground">{k}</span><span className="text-right text-foreground">{v}</span></div>)}</div>
-                <div className={`rounded-md px-2 py-1 text-xs font-semibold ${ready ? "bg-up/20 text-up" : "bg-down/20 text-down"}`}>{ready ? "APPROVED — ready to execute" : "REJECTED — " + checks[0]}</div>
+                <div className={`rounded-md px-2 py-1 text-xs font-semibold ${ready ? "bg-up/20 text-up" : "bg-down/20 text-down"}`}>{ready ? "PRECHECK PASSED — quote required" : "BLOCKED — " + (checks[0] ?? sig.note)}</div>
                 {checks.length > 1 && <ul className="list-disc pl-4 text-xs text-down">{checks.slice(1).map((c) => <li key={c}>{c}</li>)}</ul>}
               </>
             );
